@@ -22,7 +22,7 @@ func NewSystemdManager() (*SystemdManager, error) {
 		return nil, fmt.Errorf("failed to connect to system bus: %w", err)
 	}
 
-	obj := conn.BusObject("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
+	obj := conn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
 	return &SystemdManager{
 		conn:   conn,
 		obj:    obj,
@@ -73,7 +73,7 @@ func (m *SystemdManager) RestartUnit(unitName string) error {
 // GetUnitState returns the state of a systemd unit.
 func (m *SystemdManager) GetUnitState(unitName string) (string, error) {
 	unitPath := fmt.Sprintf("/org/freedesktop/systemd1/unit/%s", unitName)
-	unitObj := m.conn.BusObject("org.freedesktop.systemd1", dbus.ObjectPath(unitPath))
+	unitObj := m.conn.Object("org.freedesktop.systemd1", dbus.ObjectPath(unitPath))
 
 	var state string
 	call := unitObj.CallWithContext(context.Background(), "org.freedesktop.DBus.Properties.Get", 0, "org.freedesktop.systemd1.Unit", "ActiveState")

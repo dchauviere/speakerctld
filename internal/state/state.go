@@ -21,4 +21,9 @@ const (
 type StateMachine interface {
     CurrentState() State
     Transition(State) error
+    IsProvisioned() bool
+    WifiFailureCount() int
+    ResetWifiFailures()
+    IncrementWifiFailures() error
+    CanTransitionTo(State) bool
 }

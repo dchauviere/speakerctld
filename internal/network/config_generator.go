@@ -5,12 +5,22 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/david/speakerctld/internal/state"
 	"github.com/david/speakerctld/internal/storage"
 )
 
 // RuntimeDir is the directory for runtime files (tmpfs).
 const RuntimeDir = "/run/speakerctld"
+
+// State represents the speaker state (defined locally to avoid import cycle with state package)
+type State string
+
+// State constants (must match those in internal/state package)
+const (
+	FirstBootAP State = "FIRSTBOOT_AP"
+	WifiConnect State = "WIFI_CONNECT"
+	Online      State = "ONLINE"
+	FallbackAP  State = "FALLBACK_AP"
+)
 
 // ConfigGenerator generates network configuration files for AP and client modes.
 type ConfigGenerator struct {
@@ -30,7 +40,7 @@ func NewConfigGenerator(st storage.Storage) *ConfigGenerator {
 // It creates different configurations based on the current state:
 // - FIRSTBOOT_AP: Open AP with Speakerctld-Setup-XXXX SSID
 // - FALLBACK_AP: Secured AP with Speakerctld-Recovery-XXXX SSID
-func (g *ConfigGenerator) GenerateHostapdConfig(sm state.StateMachine, deviceID string) error {
+func (g *ConfigGenerator) GenerateHostapdConfig(currentState State, deviceID string) error {
 	// Ensure runtime directory exists
 	if err := os.MkdirAll(g.runtimeDir, 0755); err != nil {
 		return fmt.Errorf("failed to create runtime directory: %w", err)
@@ -39,11 +49,11 @@ func (g *ConfigGenerator) GenerateHostapdConfig(sm state.StateMachine, deviceID 
 	configPath := filepath.Join(g.runtimeDir, "hostapd.conf")
 
 	var config string
-	switch sm.CurrentState() {
-	case state.FirstBootAP:
+	switch currentState {
+	case FirstBootAP:
 		// Open AP for first boot
 		config = g.generateOpenAPConfig(deviceID)
-	case state.FallbackAP:
+	case FallbackAP:
 		// Secured AP for fallback
 		config = g.generateSecuredAPConfig(deviceID)
 	default:

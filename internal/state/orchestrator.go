@@ -33,6 +33,8 @@ func NewOrchestrator(st storage.Storage, deviceID string) (*Orchestrator, error)
 
 	// Create config generator
 	configGen := network.NewConfigGenerator(st)
+	// Note: We need to convert state.State to network.State for GenerateHostapdConfig
+	// to avoid import cycle between state and network packages
 
 	return &Orchestrator{
 		stateMachine:    sm,
@@ -81,7 +83,9 @@ func (o *Orchestrator) TransitionTo(target State) error {
 // handleFirstBootAP sets up the first boot access point.
 func (o *Orchestrator) handleFirstBootAP() error {
 	// Generate hostapd config for open AP
-	if err := o.configGenerator.GenerateHostapdConfig(o.stateMachine, o.deviceID); err != nil {
+	// Convert state.State to network.State
+	currentState := network.State(o.stateMachine.CurrentState())
+	if err := o.configGenerator.GenerateHostapdConfig(currentState, o.deviceID); err != nil {
 		return err
 	}
 
@@ -135,7 +139,9 @@ func (o *Orchestrator) handleOnline() error {
 // handleFallbackAP sets up the fallback access point.
 func (o *Orchestrator) handleFallbackAP() error {
 	// Generate hostapd config for secured AP
-	if err := o.configGenerator.GenerateHostapdConfig(o.stateMachine, o.deviceID); err != nil {
+	// Convert state.State to network.State
+	currentState := network.State(o.stateMachine.CurrentState())
+	if err := o.configGenerator.GenerateHostapdConfig(currentState, o.deviceID); err != nil {
 		return err
 	}
 
