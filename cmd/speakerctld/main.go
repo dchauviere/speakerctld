@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,27 +15,24 @@ import (
 	"github.com/david/speakerctld/internal/systemd"
 )
 
-// SpeakerctldAPIEndpoint is the URL used to check Speakerctld network connectivity.
-const SpeakerctldAPIEndpoint = "https://api.speakerctld.app/health"
-
-// ConnectivityCheckInterval is how often we check network connectivity.
-const ConnectivityCheckInterval = 30 * time.Second
-
 // StateCheckInterval is how often we check and potentially transition state.
 const StateCheckInterval = 10 * time.Second
 
+// DefaultWifiInterface is the default WiFi interface to monitor.
+const DefaultWifiInterface = "wlan0"
+
 // SpeakerCtld is the main application that manages the Speakerctld speaker network state.
 type SpeakerCtld struct {
-	stateMachine    state.StateMachine
-	storage         storage.Storage
-	systemdManager  *systemd.SystemdManager
-	connectivityURL string
-	stopChan        chan struct{}
-	doneChan        chan struct{}
+	stateMachine   state.StateMachine
+	storage        storage.Storage
+	systemdManager *systemd.SystemdManager
+	wifiInterface  string
+	stopChan       chan struct{}
+	doneChan       chan struct{}
 }
 
 // NewSpeakerCtld creates a new instance of the speaker controller.
-func NewSpeakerCtld() (*SpeakerCtld, error) {
+func NewSpeakerCtld(wifiInterface string) (*SpeakerCtld, error) {
 	// Initialize storage
 	st := storage.DefaultFileStorage()
 
@@ -54,12 +51,12 @@ func NewSpeakerCtld() (*SpeakerCtld, error) {
 	}
 
 	return &SpeakerCtld{
-		stateMachine:    sm,
-		storage:         st,
-		systemdManager:  systemdMgr,
-		connectivityURL: SpeakerctldAPIEndpoint,
-		stopChan:        make(chan struct{}),
-		doneChan:        make(chan struct{}),
+		stateMachine:   sm,
+		storage:        st,
+		systemdManager: systemdMgr,
+		wifiInterface:  wifiInterface,
+		stopChan:       make(chan struct{}),
+		doneChan:       make(chan struct{}),
 	}, nil
 }
 
@@ -72,6 +69,7 @@ func (s *SpeakerCtld) Run() error {
 	currentState := s.stateMachine.CurrentState()
 	log.Printf("Starting speakerctld, current state: %s", currentState)
 	log.Printf("Device provisioned: %v", s.stateMachine.IsProvisioned())
+	log.Printf("Monitoring WiFi interface: %s", s.wifiInterface)
 
 	// Handle signals for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -84,9 +82,8 @@ func (s *SpeakerCtld) Run() error {
 		cancel()
 	}()
 
-	// Start monitoring goroutines
+	// Start monitoring goroutine
 	go s.monitorStateAndNetwork(ctx)
-	go s.monitorConnectivity(ctx)
 
 	// Initial state sync - make sure systemd targets match current state
 	s.activateSystemdTargetForState(currentState)
@@ -134,33 +131,30 @@ func (s *SpeakerCtld) handleStateTransitions() {
 	// Check if WiFi credentials exist
 	hasCredentials := s.hasWiFiCredentials()
 
-	// Check WiFi connection status
+	// Check WiFi connection status on the specified interface
 	wifiConnected := s.isWiFiConnected()
 
-	// Check online status (Speakerctld connectivity)
-	online := s.isOnline()
-
-	log.Printf("[NETWORK] Has credentials: %v, WiFi connected: %v, Online: %v",
-		hasCredentials, wifiConnected, online)
+	log.Printf("[NETWORK] Has credentials: %v, WiFi connected: %v",
+		hasCredentials, wifiConnected)
 
 	// State transition logic based on current state
 	switch currentState {
 	case state.FirstBootAP:
-		s.handleFirstBootAPState(hasCredentials, wifiConnected, online)
+		s.handleFirstBootAPState(hasCredentials, wifiConnected)
 
 	case state.WifiConnect:
-		s.handleWifiConnectState(hasCredentials, wifiConnected, online)
+		s.handleWifiConnectState(hasCredentials, wifiConnected)
 
 	case state.Online:
-		s.handleOnlineState(hasCredentials, wifiConnected, online)
+		s.handleOnlineState(hasCredentials, wifiConnected)
 
 	case state.FallbackAP:
-		s.handleFallbackAPState(hasCredentials, wifiConnected, online)
+		s.handleFallbackAPState(hasCredentials, wifiConnected)
 	}
 }
 
 // handleFirstBootAPState handles state transitions from FIRSTBOOT_AP.
-func (s *SpeakerCtld) handleFirstBootAPState(hasCredentials, wifiConnected, online bool) {
+func (s *SpeakerCtld) handleFirstBootAPState(hasCredentials, wifiConnected bool) {
 	// In FIRSTBOOT_AP, we need to be provisioned to leave this state
 	if !s.stateMachine.IsProvisioned() {
 		// Make sure we're in provisioning mode
@@ -180,7 +174,7 @@ func (s *SpeakerCtld) handleFirstBootAPState(hasCredentials, wifiConnected, onli
 }
 
 // handleWifiConnectState handles state transitions from WIFI_CONNECT.
-func (s *SpeakerCtld) handleWifiConnectState(hasCredentials, wifiConnected, online bool) {
+func (s *SpeakerCtld) handleWifiConnectState(hasCredentials, wifiConnected bool) {
 	// Check if we still have credentials
 	if !hasCredentials {
 		// Lost credentials, go back to provisioning
@@ -193,21 +187,12 @@ func (s *SpeakerCtld) handleWifiConnectState(hasCredentials, wifiConnected, onli
 
 	// Check WiFi connection
 	if wifiConnected {
-		// WiFi is connected, check if we're online
-		if online {
-			log.Println("WiFi connected and online, transitioning to ONLINE")
-			if err := s.transitionTo(state.Online, "connected and online"); err == nil {
-				// Successfully online
-				// Reset failure counter
-				s.stateMachine.ResetWifiFailures()
-			}
-		} else {
-			// WiFi connected but not online - this might be a network issue
-			// Increment failure counter
-			log.Println("WiFi connected but not online, incrementing failure counter")
-			if err := s.stateMachine.IncrementWifiFailures(); err != nil {
-				log.Printf("Error incrementing failure counter: %v", err)
-			}
+		// WiFi is connected, transition to ONLINE
+		log.Println("WiFi connected, transitioning to ONLINE")
+		if err := s.transitionTo(state.Online, "wifi connected"); err == nil {
+			// Successfully online
+			// Reset failure counter
+			s.stateMachine.ResetWifiFailures()
 		}
 	} else {
 		// WiFi not connected, check failure count
@@ -223,7 +208,7 @@ func (s *SpeakerCtld) handleWifiConnectState(hasCredentials, wifiConnected, onli
 }
 
 // handleOnlineState handles state transitions from ONLINE.
-func (s *SpeakerCtld) handleOnlineState(hasCredentials, wifiConnected, online bool) {
+func (s *SpeakerCtld) handleOnlineState(hasCredentials, wifiConnected bool) {
 	// If WiFi disconnects, go back to WIFI_CONNECT
 	if !wifiConnected {
 		log.Println("WiFi disconnected from ONLINE state, transitioning to WIFI_CONNECT")
@@ -233,18 +218,10 @@ func (s *SpeakerCtld) handleOnlineState(hasCredentials, wifiConnected, online bo
 		}
 		return
 	}
-
-	// If we lose online status, increment failure counter
-	if !online {
-		log.Println("Lost Speakerctld connectivity, incrementing failure counter")
-		if err := s.stateMachine.IncrementWifiFailures(); err != nil {
-			log.Printf("Error incrementing failure counter: %v", err)
-		}
-	}
 }
 
 // handleFallbackAPState handles state transitions from FALLBACK_AP.
-func (s *SpeakerCtld) handleFallbackAPState(hasCredentials, wifiConnected, online bool) {
+func (s *SpeakerCtld) handleFallbackAPState(hasCredentials, wifiConnected bool) {
 	// In FALLBACK_AP mode, we should have AP mode active
 	s.ensureFallbackMode()
 
@@ -254,26 +231,6 @@ func (s *SpeakerCtld) handleFallbackAPState(hasCredentials, wifiConnected, onlin
 		if err := s.transitionTo(state.WifiConnect, "retrying connection"); err == nil {
 			// Reset failure counter when retrying
 			s.stateMachine.ResetWifiFailures()
-		}
-	}
-}
-
-// monitorConnectivity periodically checks if the speaker can reach Speakerctld API.
-func (s *SpeakerCtld) monitorConnectivity(ctx context.Context) {
-	ticker := time.NewTicker(ConnectivityCheckInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Println("Connectivity monitor stopped")
-			return
-		case <-s.stopChan:
-			log.Println("Connectivity monitor shutting down")
-			return
-		case <-ticker.C:
-			online := s.isOnline()
-			log.Printf("[CONNECTIVITY] Online: %v", online)
 		}
 	}
 }
@@ -360,81 +317,37 @@ func (s *SpeakerCtld) hasWiFiCredentials() bool {
 	return config != nil && config.SSID != ""
 }
 
-// isWiFiConnected checks if the speaker is connected to WiFi.
+// isWiFiConnected checks if the specified WiFi interface has a non-loopback IP address.
 func (s *SpeakerCtld) isWiFiConnected() bool {
-	// First, check via systemd if wpa_supplicant is running and connected
-	if s.systemdManager != nil {
-		state, err := s.systemdManager.GetUnitState(systemd.UnitWpaSupplicant)
-		if err == nil && state == "active" {
-			// wpa_supplicant is active, we likely have a connection
-			// Additional check: do we have a non-loopback IP address?
-			return s.hasNonLoopbackIP()
-		}
-	}
-
-	// Fallback: check for non-loopback IP addresses
-	return s.hasNonLoopbackIP()
-}
-
-// hasNonLoopbackIP checks if any network interface has a non-loopback IP address.
-func (s *SpeakerCtld) hasNonLoopbackIP() bool {
-	interfaces, err := net.Interfaces()
+	// Get the specific interface
+	iface, err := net.InterfaceByName(s.wifiInterface)
 	if err != nil {
-		log.Printf("Error getting network interfaces: %v", err)
+		log.Printf("Error getting interface %s: %v", s.wifiInterface, err)
 		return false
 	}
 
-	for _, iface := range interfaces {
-		// Skip loopback and non-up interfaces
-		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
-			continue
-		}
+	// Check if interface is up
+	if iface.Flags&net.FlagUp == 0 {
+		log.Printf("Interface %s is down", s.wifiInterface)
+		return false
+	}
 
-		// Skip non-WiFi interfaces (optional, but helps filter)
-		if len(iface.Name) < 3 {
-			continue
-		}
+	// Check if interface has a non-loopback IP address
+	addrs, err := iface.Addrs()
+	if err != nil {
+		log.Printf("Error getting addresses for %s: %v", s.wifiInterface, err)
+		return false
+	}
 
-		// Check if this interface has a non-link-local IP
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-
-		for _, addr := range addrs {
-			if ipNet, ok := addr.(*net.IPNet); ok {
-				if !ipNet.IP.IsLinkLocalUnicast() && !ipNet.IP.IsLoopback() {
-					return true
-				}
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok {
+			if !ipNet.IP.IsLinkLocalUnicast() && !ipNet.IP.IsLoopback() {
+				return true
 			}
 		}
 	}
 
 	return false
-}
-
-// isOnline checks if the speaker can reach the Speakerctld API.
-func (s *SpeakerCtld) isOnline() bool {
-	// Create HTTP client with timeout
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-	}
-
-	req, err := http.NewRequest("GET", s.connectivityURL, nil)
-	if err != nil {
-		log.Printf("Error creating request: %v", err)
-		return false
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("Error checking connectivity: %v", err)
-		return false
-	}
-	defer resp.Body.Close()
-
-	// Consider any 2xx or 3xx status as online
-	return resp.StatusCode >= 200 && resp.StatusCode < 400
 }
 
 // Start begins the application and blocks until shutdown.
@@ -448,10 +361,14 @@ func (s *SpeakerCtld) Start() {
 }
 
 func main() {
-	log.Println("Initializing Speakerctld Speaker Controller...")
+	// Parse command line flags
+	wifiInterface := flag.String("interface", DefaultWifiInterface, "WiFi interface to monitor")
+	flag.Parse()
+
+	log.Printf("Starting Speakerctld Speaker Controller with WiFi interface: %s", *wifiInterface)
 
 	// Initialize the application
-	app, err := NewSpeakerCtld()
+	app, err := NewSpeakerCtld(*wifiInterface)
 	if err != nil {
 		log.Fatalf("Failed to initialize application: %v", err)
 	}
