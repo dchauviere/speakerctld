@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/david/speakerctld/internal/storage"
+	"github.com/dchauviere/speakerctld/internal/storage"
 )
 
 // MockStorage is a mock implementation of storage.Storage for testing.

@@ -9,9 +9,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/david/speakerctld/internal/state"
-	"github.com/david/speakerctld/internal/storage"
-	"github.com/david/speakerctld/internal/ui"
+	"github.com/dchauviere/speakerctld/internal/state"
+	"github.com/dchauviere/speakerctld/internal/storage"
+	"github.com/dchauviere/speakerctld/internal/ui"
 )
 
 // Handler handles HTTP requests for the settings API

@@ -7,11 +7,11 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/david/speakerctld/internal/network"
-	"github.com/david/speakerctld/internal/state"
-	"github.com/david/speakerctld/internal/storage"
-	"github.com/david/speakerctld/internal/systemd"
-	"github.com/david/speakerctld/internal/ui"
+	"github.com/dchauviere/speakerctld/internal/network"
+	"github.com/dchauviere/speakerctld/internal/state"
+	"github.com/dchauviere/speakerctld/internal/storage"
+	"github.com/dchauviere/speakerctld/internal/systemd"
+	"github.com/dchauviere/speakerctld/internal/ui"
 )
 
 // Handler handles HTTP requests for the captive portal API

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"text/template"
 
-	"github.com/david/speakerctld/internal/storage"
+	"github.com/dchauviere/speakerctld/internal/storage"
 )
 
 // RuntimeDir is the directory for runtime files (tmpfs).

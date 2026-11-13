@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/david/speakerctld/internal/swupdate"
+	"github.com/dchauviere/speakerctld/internal/swupdate"
 )
 
 // TestNewInstaller tests creating a new installer

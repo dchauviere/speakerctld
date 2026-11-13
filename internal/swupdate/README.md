@@ -31,7 +31,7 @@ export CGO_ENABLED=1
 export CGO_CFLAGS="-Iinternal/swupdate/c_wrapper"
 export CGO_LDFLAGS="-lswupdate"
 
-go get github.com/david/speakerctld/internal/swupdate
+go get github.com/dchauviere/speakerctld/internal/swupdate
 ```
 
 ## Usage
@@ -44,7 +44,7 @@ package main
 import (
     "fmt"
     "log"
-    "github.com/david/speakerctld/internal/swupdate"
+    "github.com/dchauviere/speakerctld/internal/swupdate"
 )
 
 func main() {

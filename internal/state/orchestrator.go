@@ -3,9 +3,9 @@ package state
 import (
 	"log"
 
-	"github.com/david/speakerctld/internal/network"
-	"github.com/david/speakerctld/internal/storage"
-	"github.com/david/speakerctld/internal/systemd"
+	"github.com/dchauviere/speakerctld/internal/network"
+	"github.com/dchauviere/speakerctld/internal/storage"
+	"github.com/dchauviere/speakerctld/internal/systemd"
 )
 
 // Orchestrator coordinates state transitions with systemd targets and configuration generation.

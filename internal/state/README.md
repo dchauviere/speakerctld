@@ -28,8 +28,8 @@ FALLBACK_AP -> WIFI_CONNECT (on retry)
 package main
 
 import (
-    "github.com/david/speakerctld/internal/state"
-    "github.com/david/speakerctld/internal/storage"
+    "github.com/dchauviere/speakerctld/internal/state"
+    "github.com/dchauviere/speakerctld/internal/storage"
 )
 
 func main() {
@@ -61,8 +61,8 @@ The orchestrator coordinates state transitions with systemd targets and configur
 package main
 
 import (
-    "github.com/david/speakerctld/internal/state"
-    "github.com/david/speakerctld/internal/storage"
+    "github.com/dchauviere/speakerctld/internal/state"
+    "github.com/dchauviere/speakerctld/internal/storage"
 )
 
 func main() {
@@ -96,8 +96,8 @@ Use the `StateTransitionHandler` to handle network events:
 package main
 
 import (
-    "github.com/david/speakerctld/internal/state"
-    "github.com/david/speakerctld/internal/storage"
+    "github.com/dchauviere/speakerctld/internal/state"
+    "github.com/dchauviere/speakerctld/internal/storage"
 )
 
 func main() {

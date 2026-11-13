@@ -4,7 +4,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/david/speakerctld/internal/storage"
+	"github.com/dchauviere/speakerctld/internal/storage"
 )
 
 // ErrInvalidTransition is returned when a state transition is not allowed.

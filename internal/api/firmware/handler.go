@@ -10,8 +10,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/david/speakerctld/internal/state"
-	"github.com/david/speakerctld/internal/swupdate"
+	"github.com/dchauviere/speakerctld/internal/state"
+	"github.com/dchauviere/speakerctld/internal/swupdate"
 )
 
 // Handler handles HTTP requests for firmware update operations

@@ -29,7 +29,7 @@ This document describes how to build the Speakerctld application with SWUpdate i
 ### Clone the Repository
 
 ```bash
-git clone https://github.com/david/speakerctld.git
+git clone https://github.com/dchauviere/speakerctld.git
 cd speakerctld
 ```
 

@@ -10,10 +10,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/david/speakerctld/internal/api"
-	"github.com/david/speakerctld/internal/state"
-	"github.com/david/speakerctld/internal/storage"
-	"github.com/david/speakerctld/internal/systemd"
+	"github.com/dchauviere/speakerctld/internal/api"
+	"github.com/dchauviere/speakerctld/internal/state"
+	"github.com/dchauviere/speakerctld/internal/storage"
+	"github.com/dchauviere/speakerctld/internal/systemd"
 )
 
 // StateCheckInterval is how often we check and potentially transition state.

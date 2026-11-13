@@ -1,7 +1,7 @@
 package state
 
 import (
-	"github.com/david/speakerctld/internal/storage"
+	"github.com/dchauviere/speakerctld/internal/storage"
 )
 
 // NetworkEvent represents a network connectivity event.

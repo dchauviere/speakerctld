@@ -5,14 +5,14 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/david/speakerctld/internal/api/captive"
-	"github.com/david/speakerctld/internal/api/firmware"
-	"github.com/david/speakerctld/internal/api/settings"
-	"github.com/david/speakerctld/internal/api/websocket"
-	"github.com/david/speakerctld/internal/state"
-	"github.com/david/speakerctld/internal/storage"
-	"github.com/david/speakerctld/internal/swupdate"
-	"github.com/david/speakerctld/internal/systemd"
+	"github.com/dchauviere/speakerctld/internal/api/captive"
+	"github.com/dchauviere/speakerctld/internal/api/firmware"
+	"github.com/dchauviere/speakerctld/internal/api/settings"
+	"github.com/dchauviere/speakerctld/internal/api/websocket"
+	"github.com/dchauviere/speakerctld/internal/state"
+	"github.com/dchauviere/speakerctld/internal/storage"
+	"github.com/dchauviere/speakerctld/internal/swupdate"
+	"github.com/dchauviere/speakerctld/internal/systemd"
 )
 
 // Server manages the web server for both captive portal and settings interfaces
