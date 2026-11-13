@@ -22,6 +22,7 @@ type StateMachine interface {
     CurrentState() State
     Transition(State) error
     IsProvisioned() bool
+    SetProvisioned()
     WifiFailureCount() int
     ResetWifiFailures()
     IncrementWifiFailures() error

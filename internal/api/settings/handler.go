@@ -1,0 +1,210 @@
+package settings
+
+import (
+	"encoding/json"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+
+	"github.com/david/speakerctld/internal/state"
+	"github.com/david/speakerctld/internal/storage"
+	"github.com/david/speakerctld/internal/ui"
+)
+
+// Handler handles HTTP requests for the settings API
+type Handler struct {
+	stateMachine state.StateMachine
+	storage      storage.Storage
+	dataDir      string
+}
+
+// NewHandler creates a new settings API handler
+func NewHandler(stateMachine state.StateMachine, storage storage.Storage) *Handler {
+	return &Handler{
+		stateMachine: stateMachine,
+		storage:      storage,
+		dataDir:      "/data",
+	}
+}
+
+// ServeHTTP implements http.Handler for the settings API
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Check if we're in a valid state (ONLINE or FALLBACK_AP)
+	currentState := h.stateMachine.CurrentState()
+	if currentState != state.Online && currentState != state.FallbackAP {
+		http.Error(w, "Settings API only available in ONLINE or FALLBACK_AP state", http.StatusForbidden)
+		return
+	}
+
+	switch r.URL.Path {
+	case "/":
+		h.serveSettingsPage(w, r)
+	case "/api/settings":
+		h.handleGetSettings(w, r)
+	case "/api/firmware/info":
+		h.handleFirmwareInfo(w, r)
+	case "/api/firmware/check":
+		h.handleFirmwareCheck(w, r)
+	case "/api/system/info":
+		h.handleSystemInfo(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// serveSettingsPage serves the settings HTML page
+func (h *Handler) serveSettingsPage(w http.ResponseWriter, r *http.Request) {
+	// Set content type
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	// Execute template
+	_, err := w.Write([]byte(ui.SettingsTemplate))
+	if err != nil {
+		log.Printf("Error writing template: %v", err)
+	}
+}
+
+// handleGetSettings handles GET requests for settings
+func (h *Handler) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Load WiFi config to get current SSID
+	wifiConfig, err := h.storage.LoadWifiConfig()
+	if err != nil {
+		log.Printf("Error loading WiFi config: %v", err)
+	}
+
+	// Load device info
+	deviceInfo, err := h.getDeviceInfo()
+	if err != nil {
+		log.Printf("Error loading device info: %v", err)
+	}
+
+	// Prepare response
+	settings := ui.SettingsData{
+		DeviceName: deviceInfo.DeviceID,
+		CurrentSSID: "",
+	}
+
+	if wifiConfig != nil {
+		settings.CurrentSSID = wifiConfig.SSID
+	}
+
+	// Set content type
+	w.Header().Set("Content-Type", "application/json")
+
+	// Return JSON response
+	if err := json.NewEncoder(w).Encode(settings); err != nil {
+		log.Printf("Error encoding settings: %v", err)
+	}
+}
+
+// handleFirmwareInfo handles GET requests for firmware information
+func (h *Handler) handleFirmwareInfo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Placeholder firmware info
+	// In production, this would read from a version file or system info
+	firmwareInfo := ui.FirmwareInfo{
+		Version: "1.0.0",
+		Date:    "2024-01-01",
+	}
+
+	// Try to read version from file
+	if version, err := os.ReadFile(filepath.Join(h.dataDir, "firmware-version")); err == nil {
+		firmwareInfo.Version = string(version)
+	}
+
+	// Set content type
+	w.Header().Set("Content-Type", "application/json")
+
+	// Return JSON response
+	if err := json.NewEncoder(w).Encode(firmwareInfo); err != nil {
+		log.Printf("Error encoding firmware info: %v", err)
+	}
+}
+
+// handleFirmwareCheck handles POST requests to check for firmware updates
+func (h *Handler) handleFirmwareCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Placeholder - always return no update available
+	// In production, this would check a server or local file
+	w.Header().Set("Content-Type", "application/json")
+	
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"updateAvailable": false,
+		"currentVersion": "1.0.0",
+		"latestVersion":  "1.0.0",
+		"message":        "No firmware update available",
+	})
+}
+
+// handleSystemInfo handles GET requests for system information
+func (h *Handler) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Load WiFi config
+	wifiConfig, err := h.storage.LoadWifiConfig()
+	if err != nil {
+		log.Printf("Error loading WiFi config: %v", err)
+	}
+
+	// Load system state
+	sysState, err := h.storage.LoadSystemState()
+	if err != nil {
+		log.Printf("Error loading system state: %v", err)
+	}
+
+	// Get IP address (placeholder)
+	ipAddress := h.getIPAddress()
+
+	// Prepare response
+	systemInfo := ui.SystemInfo{
+		Mode:      string(h.stateMachine.CurrentState()),
+		State:     "OK",
+		IPAddress: ipAddress,
+		SSID:      "",
+	}
+
+	if sysState != nil {
+		systemInfo.State = sysState.State
+	}
+
+	if wifiConfig != nil {
+		systemInfo.SSID = wifiConfig.SSID
+	}
+
+	// Set content type
+	w.Header().Set("Content-Type", "application/json")
+
+	// Return JSON response
+	if err := json.NewEncoder(w).Encode(systemInfo); err != nil {
+		log.Printf("Error encoding system info: %v", err)
+	}
+}
+
+// getDeviceInfo loads device information
+func (h *Handler) getDeviceInfo() (*storage.DeviceInfo, error) {
+	fs := storage.NewFileStorage(h.dataDir)
+	return fs.LoadDeviceInfo()
+}
+
+// getIPAddress returns the current IP address (placeholder)
+func (h *Handler) getIPAddress() string {
+	// Placeholder - in production, this would get the actual IP
+	return "192.168.1.100"
+}

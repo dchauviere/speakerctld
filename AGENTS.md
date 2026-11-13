@@ -13,7 +13,7 @@ This project is focused on managing the network state and configuration for the 
 
 ## Architecture Overview
 ```PlainText
-Systemd
+systemd
 ├── speakerctld.service
 ├── hostapd.service
 ├── dnsmasq.service

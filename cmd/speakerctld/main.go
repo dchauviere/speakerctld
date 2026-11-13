@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/david/speakerctld/internal/api"
 	"github.com/david/speakerctld/internal/state"
 	"github.com/david/speakerctld/internal/storage"
 	"github.com/david/speakerctld/internal/systemd"
@@ -21,18 +22,25 @@ const StateCheckInterval = 10 * time.Second
 // DefaultWifiInterface is the default WiFi interface to monitor.
 const DefaultWifiInterface = "wlan0"
 
+// DefaultCaptivePortalPort is the default port for the captive portal
+const DefaultCaptivePortalPort = "8080"
+
+// DefaultSettingsPort is the default port for the settings interface
+const DefaultSettingsPort = "8081"
+
 // SpeakerCtld is the main application that manages the Speakerctld speaker network state.
 type SpeakerCtld struct {
 	stateMachine   state.StateMachine
 	storage        storage.Storage
 	systemdManager *systemd.SystemdManager
 	wifiInterface  string
+	apiServer      *api.Server
 	stopChan       chan struct{}
 	doneChan       chan struct{}
 }
 
 // NewSpeakerCtld creates a new instance of the speaker controller.
-func NewSpeakerCtld(wifiInterface string) (*SpeakerCtld, error) {
+func NewSpeakerCtld(wifiInterface, captivePort, settingsPort string) (*SpeakerCtld, error) {
 	// Initialize storage
 	st := storage.DefaultFileStorage()
 
@@ -50,11 +58,27 @@ func NewSpeakerCtld(wifiInterface string) (*SpeakerCtld, error) {
 		systemdMgr = nil
 	}
 
+	// Initialize API server
+	apiServer, err := api.NewServer(
+		sm,
+		st,
+		systemdMgr,
+		wifiInterface,
+		captivePort,
+		settingsPort,
+	)
+	if err != nil {
+		log.Printf("Warning: failed to initialize API server: %v", err)
+		// Continue without API server
+		apiServer = nil
+	}
+
 	return &SpeakerCtld{
 		stateMachine:   sm,
 		storage:        st,
 		systemdManager: systemdMgr,
 		wifiInterface:  wifiInterface,
+		apiServer:      apiServer,
 		stopChan:       make(chan struct{}),
 		doneChan:       make(chan struct{}),
 	}, nil
@@ -70,6 +94,13 @@ func (s *SpeakerCtld) Run() error {
 	log.Printf("Starting speakerctld, current state: %s", currentState)
 	log.Printf("Device provisioned: %v", s.stateMachine.IsProvisioned())
 	log.Printf("Monitoring WiFi interface: %s", s.wifiInterface)
+
+	// Start API server
+	if s.apiServer != nil {
+		if err := s.apiServer.Start(); err != nil {
+			log.Printf("Warning: failed to start API server: %v", err)
+		}
+	}
 
 	// Handle signals for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -92,6 +123,12 @@ func (s *SpeakerCtld) Run() error {
 	<-s.doneChan
 
 	// Cleanup
+	if s.apiServer != nil {
+		if err := s.apiServer.Stop(); err != nil {
+			log.Printf("Error stopping API server: %v", err)
+		}
+	}
+
 	if s.systemdManager != nil {
 		s.systemdManager.Close()
 	}
@@ -363,12 +400,16 @@ func (s *SpeakerCtld) Start() {
 func main() {
 	// Parse command line flags
 	wifiInterface := flag.String("interface", DefaultWifiInterface, "WiFi interface to monitor")
+	captivePort := flag.String("captive-port", DefaultCaptivePortalPort, "Captive portal HTTP port")
+	settingsPort := flag.String("settings-port", DefaultSettingsPort, "Settings HTTP port")
 	flag.Parse()
 
 	log.Printf("Starting Speakerctld Speaker Controller with WiFi interface: %s", *wifiInterface)
+	log.Printf("Captive portal will be available on port: %s", *captivePort)
+	log.Printf("Settings interface will be available on port: %s", *settingsPort)
 
 	// Initialize the application
-	app, err := NewSpeakerCtld(*wifiInterface)
+	app, err := NewSpeakerCtld(*wifiInterface, *captivePort, *settingsPort)
 	if err != nil {
 		log.Fatalf("Failed to initialize application: %v", err)
 	}
