@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Speakerctld - Configuration WiFi</title>
+    <link rel="stylesheet" href="/static/captive.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Configuration WiFi Speakerctld</h1>
+            <p>Connectez votre enceinte au reseau WiFi</p>
+        </div>
+        <div class="content">
+            <div id="loading" class="loading">
+                <div class="spinner"></div>
+                <p>Recherche des reseaux WiFi...</p>
+            </div>
+            
+            <div id="error" class="error hidden"></div>
+            <div id="success" class="success hidden"></div>
+            
+            <h2>Reseaux disponibles</h2>
+            <div id="wifi-list" class="wifi-list">
+                <!-- WiFi networks will be populated by JavaScript -->
+            </div>
+            
+            <div class="custom-network">
+                <h3>ou</h3>
+                <p>Connectez-vous a un reseau cache ou personnalise</p>
+                <div class="form-group">
+                    <label for="custom-ssid">Nom du reseau (SSID)</label>
+                    <input type="text" id="custom-ssid" placeholder="Nom du reseau">
+                </div>
+                <div class="form-group">
+                    <label for="custom-password">Mot de passe</label>
+                    <input type="password" id="custom-password" placeholder="Mot de passe">
+                </div>
+            </div>
+            
+            <div class="buttons">
+                <button class="btn" onclick="connect()">Se connecter</button>
+                <button class="btn btn-secondary" onclick="refresh()">Actualiser</button>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/static/captive.js"></script>
+</body>
+</html>

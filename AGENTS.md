@@ -35,7 +35,6 @@ Go-based Manager
 
 # Implementation Plan
 
-
 # contraintes
 
 Toutes les interactions avec ces composants doivent passer par les interfaces DBus appropriées pour garantir la cohérence et la fiabilité du système.

@@ -2,6 +2,8 @@ package settings
 
 import (
 	"encoding/json"
+	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -17,6 +19,7 @@ type Handler struct {
 	stateMachine state.StateMachine
 	storage      storage.Storage
 	dataDir      string
+	assets       fs.FS
 }
 
 // NewHandler creates a new settings API handler
@@ -25,6 +28,7 @@ func NewHandler(stateMachine state.StateMachine, storage storage.Storage) *Handl
 		stateMachine: stateMachine,
 		storage:      storage,
 		dataDir:      "/data",
+		assets:       ui.SettingsAssets(),
 	}
 }
 
@@ -37,17 +41,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch r.URL.Path {
-	case "/":
+	switch {
+	case r.URL.Path == "/":
 		h.serveSettingsPage(w, r)
-	case "/api/settings":
+	case r.URL.Path == "/api/settings":
 		h.handleGetSettings(w, r)
-	case "/api/firmware/info":
+	case r.URL.Path == "/api/firmware/info":
 		h.handleFirmwareInfo(w, r)
-	case "/api/firmware/check":
+	case r.URL.Path == "/api/firmware/check":
 		h.handleFirmwareCheck(w, r)
-	case "/api/system/info":
+	case r.URL.Path == "/api/system/info":
 		h.handleSystemInfo(w, r)
+	case r.URL.Path == "/static/settings.css":
+		h.serveStaticFile(w, r, "settings/settings.css")
+	case r.URL.Path == "/static/settings.js":
+		h.serveStaticFile(w, r, "settings/settings.js")
 	default:
 		http.NotFound(w, r)
 	}
@@ -58,10 +66,54 @@ func (h *Handler) serveSettingsPage(w http.ResponseWriter, r *http.Request) {
 	// Set content type
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-	// Execute template
-	_, err := w.Write([]byte(ui.SettingsTemplate))
+	// Read and serve the embedded HTML file
+	file, err := h.assets.Open("settings/index.html")
 	if err != nil {
-		log.Printf("Error writing template: %v", err)
+		http.Error(w, "Failed to load settings page", http.StatusInternalServerError)
+		return
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		http.Error(w, "Failed to read settings page", http.StatusInternalServerError)
+		return
+	}
+
+	_, err = w.Write(data)
+	if err != nil {
+		log.Printf("Error writing settings page: %v", err)
+	}
+}
+
+// serveStaticFile serves static files from embedded assets
+func (h *Handler) serveStaticFile(w http.ResponseWriter, r *http.Request, path string) {
+	file, err := h.assets.Open(path)
+	if err != nil {
+		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		http.Error(w, "Failed to read file", http.StatusInternalServerError)
+		return
+	}
+
+	// Set appropriate content type based on file extension
+	switch {
+	case path[len(path)-3:] == ".css":
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	case path[len(path)-2:] == ".js":
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	default:
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+
+	_, err = w.Write(data)
+	if err != nil {
+		log.Printf("Error writing static file %s: %v", path, err)
 	}
 }
 
@@ -111,7 +163,6 @@ func (h *Handler) handleFirmwareInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Placeholder firmware info
-	// In production, this would read from a version file or system info
 	firmwareInfo := ui.FirmwareInfo{
 		Version: "1.0.0",
 		Date:    "2024-01-01",
@@ -139,7 +190,6 @@ func (h *Handler) handleFirmwareCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Placeholder - always return no update available
-	// In production, this would check a server or local file
 	w.Header().Set("Content-Type", "application/json")
 	
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -205,6 +255,5 @@ func (h *Handler) getDeviceInfo() (*storage.DeviceInfo, error) {
 
 // getIPAddress returns the current IP address (placeholder)
 func (h *Handler) getIPAddress() string {
-	// Placeholder - in production, this would get the actual IP
 	return "192.168.1.100"
 }

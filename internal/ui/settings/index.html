@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Speakerctld - Parametres</title>
+    <link rel="stylesheet" href="/static/settings.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Parametres Speakerctld</h1>
+        </div>
+        <div class="content">
+            <div class="nav-tabs">
+                <div class="nav-tab active" onclick="switchTab(event, 'settings')">Parametres</div>
+                <div class="nav-tab" onclick="switchTab(event, 'firmware')">Mise a jour firmware</div>
+                <div class="nav-tab" onclick="switchTab(event, 'info')">Informations</div>
+            </div>
+            
+            <div id="settings" class="tab-content active">
+                <h2>Parametres systeme</h2>
+                <p class="info-text">Les parametres sont temporairement desactivees. Cette fonctionnalite sera disponible dans une future mise a jour.</p>
+                
+                <div class="settings-section">
+                    <h2>Parametres reseau</h2>
+                    <div class="form-group">
+                        <label for="device-name">Nom de l'appareil</label>
+                        <input type="text" id="device-name" placeholder="Nom de l'appareil" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label for="current-ssid">Reseau WiFi actuel</label>
+                        <input type="text" id="current-ssid" placeholder="Non connecte" readonly>
+                    </div>
+                </div>
+                
+                <div class="buttons">
+                    <button class="btn btn-secondary" onclick="refreshSettings()">Actualiser</button>
+                </div>
+            </div>
+            
+            <div id="firmware" class="tab-content">
+                <h2>Mise a jour du firmware</h2>
+                <p class="info-text">Telechargez un fichier de mise a jour du firmware pour mettre a jour votre enceinte Speakerctld.</p>
+                
+                <div class="card">
+                    <h3>Firmware actuel</h3>
+                    <div class="firmware-info">
+                        <span class="firmware-label">Version:</span>
+                        <span class="firmware-value" id="current-version">Chargement...</span>
+                    </div>
+                    <div class="firmware-info">
+                        <span class="firmware-label">Date:</span>
+                        <span class="firmware-value" id="current-date">Chargement...</span>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <h3>Telecharger une mise a jour</h3>
+                    <p class="info-text">Fonctionnalite temporairement desactivee.</p>
+                    <div class="file-upload" id="file-upload">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="17 8 12 3 7 8"/>
+                            <line x1="12" y1="3" x2="12" y2="15"/>
+                        </svg>
+                        <p>Glissez-deposez un fichier ou cliquez pour selectionner</p>
+                        <input type="file" id="firmware-file" accept=".bin,.img">
+                    </div>
+                    <div id="upload-status" class="status hidden"></div>
+                </div>
+                
+                <div class="buttons">
+                    <button class="btn" onclick="updateFirmware()" id="update-btn" disabled>Mettre a jour</button>
+                    <button class="btn btn-secondary" onclick="checkUpdate()">Verifier les mises a jour</button>
+                </div>
+            </div>
+            
+            <div id="info" class="tab-content">
+                <h2>Informations systeme</h2>
+                
+                <div class="card">
+                    <h3>Systeme</h3>
+                    <div class="firmware-info">
+                        <span class="firmware-label">Nom:</span>
+                        <span class="firmware-value">Speakerctld Speaker</span>
+                    </div>
+                    <div class="firmware-info">
+                        <span class="firmware-label">Mode:</span>
+                        <span class="firmware-value" id="system-mode">Chargement...</span>
+                    </div>
+                    <div class="firmware-info">
+                        <span class="firmware-label">Etat:</span>
+                        <span class="firmware-value" id="system-state">Chargement...</span>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <h3>Reseau</h3>
+                    <div class="firmware-info">
+                        <span class="firmware-label">Adresse IP:</span>
+                        <span class="firmware-value" id="ip-address">Chargement...</span>
+                    </div>
+                    <div class="firmware-info">
+                        <span class="firmware-label">SSID:</span>
+                        <span class="firmware-value" id="network-ssid">Chargement...</span>
+                    </div>
+                </div>
+                
+                <div class="buttons">
+                    <button class="btn btn-secondary" onclick="refreshInfo()">Actualiser</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/static/settings.js"></script>
+</body>
+</html>

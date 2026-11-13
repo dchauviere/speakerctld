@@ -2,6 +2,8 @@ package captive
 
 import (
 	"encoding/json"
+	"io"
+	"io/fs"
 	"log"
 	"net/http"
 
@@ -19,6 +21,7 @@ type Handler struct {
 	systemdManager *systemd.SystemdManager
 	networkManager *network.WifiConnectionManager
 	wifiInterface  string
+	assets         fs.FS
 }
 
 // NewHandler creates a new captive portal API handler
@@ -30,6 +33,7 @@ func NewHandler(stateMachine state.StateMachine, storage storage.Storage,
 		storage:        storage,
 		systemdManager: systemdManager,
 		wifiInterface:  wifiInterface,
+		assets:         ui.CaptiveAssets(),
 	}
 
 	// Initialize network manager (optional - may fail if NetworkManager not running)
@@ -50,13 +54,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch r.URL.Path {
-	case "/":
+	switch {
+	case r.URL.Path == "/":
 		h.serveCaptivePortal(w, r)
-	case "/api/wifi/scan":
+	case r.URL.Path == "/api/wifi/scan":
 		h.handleWifiScan(w, r)
-	case "/api/wifi":
+	case r.URL.Path == "/api/wifi":
 		h.handleWifiConnect(w, r)
+	case r.URL.Path == "/static/captive.css":
+		h.serveStaticFile(w, r, "captive/captive.css")
+	case r.URL.Path == "/static/captive.js":
+		h.serveStaticFile(w, r, "captive/captive.js")
 	default:
 		http.NotFound(w, r)
 	}
@@ -67,10 +75,54 @@ func (h *Handler) serveCaptivePortal(w http.ResponseWriter, r *http.Request) {
 	// Set content type
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-	// Execute template
-	_, err := w.Write([]byte(ui.CaptivePortalTemplate))
+	// Read and serve the embedded HTML file
+	file, err := h.assets.Open("captive/index.html")
 	if err != nil {
-		log.Printf("Error writing template: %v", err)
+		http.Error(w, "Failed to load captive portal page", http.StatusInternalServerError)
+		return
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		http.Error(w, "Failed to read captive portal page", http.StatusInternalServerError)
+		return
+	}
+
+	_, err = w.Write(data)
+	if err != nil {
+		log.Printf("Error writing captive portal page: %v", err)
+	}
+}
+
+// serveStaticFile serves static files from embedded assets
+func (h *Handler) serveStaticFile(w http.ResponseWriter, r *http.Request, path string) {
+	file, err := h.assets.Open(path)
+	if err != nil {
+		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		http.Error(w, "Failed to read file", http.StatusInternalServerError)
+		return
+	}
+
+	// Set appropriate content type based on file extension
+	switch {
+	case path[len(path)-3:] == ".css":
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	case path[len(path)-2:] == ".js":
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	default:
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+
+	_, err = w.Write(data)
+	if err != nil {
+		log.Printf("Error writing static file %s: %v", path, err)
 	}
 }
 
@@ -98,7 +150,6 @@ func (h *Handler) handleWifiScan(w http.ResponseWriter, r *http.Request) {
 }
 
 // scanWifiNetworks scans for available WiFi networks
-// This is a placeholder - actual implementation would use NetworkManager or iwlist
 func (h *Handler) scanWifiNetworks() ([]ui.WifiNetwork, error) {
 	// Try to scan using NetworkManager
 	if h.networkManager != nil {
@@ -112,7 +163,6 @@ func (h *Handler) scanWifiNetworks() ([]ui.WifiNetwork, error) {
 }
 
 // getPlaceholderWifiNetworks returns placeholder WiFi network data
-// In production, this would be replaced with actual WiFi scanning
 func (h *Handler) getPlaceholderWifiNetworks() []ui.WifiNetwork {
 	// For demo purposes, return some sample networks
 	return []ui.WifiNetwork{
@@ -164,7 +214,6 @@ func (h *Handler) handleWifiConnect(w http.ResponseWriter, r *http.Request) {
 	h.stateMachine.SetProvisioned()
 
 	// Transition to WIFI_CONNECT state
-	// This will trigger the systemd target change and WiFi connection attempt
 	if err := h.stateMachine.Transition(state.WifiConnect); err != nil {
 		log.Printf("Error transitioning to WIFI_CONNECT: %v", err)
 	}
@@ -173,8 +222,6 @@ func (h *Handler) handleWifiConnect(w http.ResponseWriter, r *http.Request) {
 	if h.networkManager != nil {
 		if err := h.networkManager.Connect(request.SSID, request.PSK); err != nil {
 			log.Printf("Warning: NetworkManager connection failed: %v", err)
-			// Connection attempt failed, but config is saved
-			// The state machine will handle retry logic
 		}
 	}
 
