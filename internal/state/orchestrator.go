@@ -82,10 +82,10 @@ func (o *Orchestrator) TransitionTo(target State) error {
 
 // handleFirstBootAP sets up the first boot access point.
 func (o *Orchestrator) handleFirstBootAP() error {
-	// Generate hostapd config for open AP
+	// Generate hostapd and dnsmasq configs for open AP
 	// Convert state.State to network.State
 	currentState := network.State(o.stateMachine.CurrentState())
-	if err := o.configGenerator.GenerateHostapdConfig(currentState, o.deviceID); err != nil {
+	if err := o.configGenerator.GenerateAPConfigs(currentState, o.deviceID); err != nil {
 		return err
 	}
 
@@ -140,10 +140,10 @@ func (o *Orchestrator) handleOnline() error {
 
 // handleFallbackAP sets up the fallback access point.
 func (o *Orchestrator) handleFallbackAP() error {
-	// Generate hostapd config for secured AP
+	// Generate hostapd and dnsmasq configs for secured AP
 	// Convert state.State to network.State
 	currentState := network.State(o.stateMachine.CurrentState())
-	if err := o.configGenerator.GenerateHostapdConfig(currentState, o.deviceID); err != nil {
+	if err := o.configGenerator.GenerateAPConfigs(currentState, o.deviceID); err != nil {
 		return err
 	}
 

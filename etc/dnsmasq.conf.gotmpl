@@ -1,0 +1,27 @@
+interface={{ .NetworkInterface }}
+
+bind-interfaces
+
+dhcp-range={{ .DHCPStartAddress }},{{ .DHCPEndAddress }},255.255.255.0,12h
+
+dhcp-option=3,{{ .AccessPointIP }}
+dhcp-option=6,{{ .AccessPointIP }}
+
+address=/#/{{ .AccessPointIP }}
+
+domain-needed
+bogus-priv
+
+# Tout rediriger vers le portail
+address=/#/{{ .AccessPointIP }}
+
+# Exceptions détection captive portal
+server=/connectivitycheck.gstatic.com/8.8.8.8
+server=/connectivitycheck.android.com/8.8.8.8
+server=/clients3.google.com/8.8.8.8
+server=/captive.apple.com/8.8.8.8
+server=/www.msftconnecttest.com/8.8.8.8
+server=/dns.msftncsi.com/8.8.8.8
+
+# log-queries
+# log-dhcp

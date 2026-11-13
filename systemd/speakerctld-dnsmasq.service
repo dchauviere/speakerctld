@@ -4,7 +4,6 @@ Description=Speaker DHCP DNS
 Requires=speakerctld-hostapd.service
 After=speakerctld-hostapd.service
 Conflicts=dnsmasq.service
-After=dnsmasq.service
 
 [Service]
 Type=simple
