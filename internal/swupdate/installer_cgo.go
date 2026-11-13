@@ -6,7 +6,6 @@ package swupdate
 /*
 #cgo pkg-config: swupdate
 #cgo CFLAGS: -I${SRCDIR}/c_wrapper
-#cgo SOURCES: c_wrapper/swupdate_wrapper.c
 
 #include <stdlib.h>
 #include "swupdate_wrapper.h"
