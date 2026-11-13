@@ -1,4 +1,4 @@
-module github.com/david/speakerctld
+module github.com/dchauviere/speakerctld
 
 go 1.21
 
