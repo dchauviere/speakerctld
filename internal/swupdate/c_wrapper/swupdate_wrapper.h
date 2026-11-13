@@ -141,6 +141,28 @@ int swupdate_wrapper_wait_completion(unsigned int timeout_ms);
  */
 void swupdate_wrapper_set_read_callback(void *context);
 
+/*
+ * Progress socket management and reception
+ */
+
+/*
+ * Connect to the progress socket
+ * Returns: 0 on success, negative on error
+ */
+int swupdate_progress_connect(void);
+
+/*
+ * Disconnect from the progress socket
+ */
+void swupdate_progress_disconnect(void);
+
+/*
+ * Receive progress information from the socket
+ * progress: Pointer to SwupdateProgress structure to fill
+ * Returns: 0 on success, negative on error or if no data available
+ */
+int swupdate_progress_receive(SwupdateProgress *progress);
+
 #ifdef __cplusplus
 }
 #endif

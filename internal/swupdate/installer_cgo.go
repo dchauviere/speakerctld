@@ -7,11 +7,13 @@ package swupdate
 #cgo pkg-config: swupdate
 #cgo CFLAGS: -I${SRCDIR}/c_wrapper
 
+#include <stdlib.h>
 #include "swupdate_wrapper.h"
 */
 import "C"
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,20 +25,20 @@ import (
 
 // swupdateClient implements the Installer interface with CGO
 type swupdateClient struct {
-	mu              sync.RWMutex
-	initialized     bool
-	running         int32 // atomic for thread safety
-	status          UpdateStatus
-	progress        Progress
-	subcribers      []chan UpdateEvent
-	closeChan       chan struct{}
-	closeDone       chan struct{}
-	ctrlSocketPath  string
-	progSocketPath  string
-	dataReader      interface{}
-	dataFile        *os.File
-	bufferSize      int
-	bytesSent       int64
+	mu             sync.RWMutex
+	initialized    bool
+	running        int32 // atomic for thread safety
+	status         UpdateStatus
+	progress       Progress
+	subscribers    []chan UpdateEvent
+	closeChan      chan struct{}
+	closeDone      chan struct{}
+	ctrlSocketPath string
+	progSocketPath string
+	dataReader     interface{}
+	dataFile       *os.File
+	bufferSize     int
+	bytesSent      int64
 }
 
 // NewInstaller creates a new SWUpdate installer client
@@ -48,11 +50,11 @@ func NewInstaller() (Installer, error) {
 func NewInstallerWithPaths(ctrlSocketPath, progSocketPath string) (Installer, error) {
 	client := &swupdateClient{
 		initialized:    false,
-		running:       0,
-		status:        StatusIdle,
-		closeChan:     make(chan struct{}),
-		closeDone:     make(chan struct{}),
-		bufferSize:    DefaultBufferSize,
+		running:        0,
+		status:         StatusIdle,
+		closeChan:      make(chan struct{}),
+		closeDone:      make(chan struct{}),
+		bufferSize:     DefaultBufferSize,
 		ctrlSocketPath: ctrlSocketPath,
 		progSocketPath: progSocketPath,
 	}
@@ -62,7 +64,7 @@ func NewInstallerWithPaths(ctrlSocketPath, progSocketPath string) (Installer, er
 	progPath := C.CString(client.progSocketPath)
 	defer C.free(unsafe.Pointer(ctrlPath))
 	defer C.free(unsafe.Pointer(progPath))
-	
+
 	result := C.swupdate_wrapper_init(ctrlPath, progPath)
 	if result != 0 {
 		return nil, fmt.Errorf("failed to initialize SWUpdate wrapper: %d", result)
@@ -165,7 +167,7 @@ func (c *swupdateClient) startUpdateInternal(source UpdateSource) {
 		runningModeC = C.CString(source.RunningMode)
 		defer C.free(unsafe.Pointer(runningModeC))
 	}
-	
+
 	result := C.swupdate_wrapper_start_update(
 		C.UpdateSourceType(source.Type),
 		C.bool(source.DryRun),
@@ -204,7 +206,7 @@ func (c *swupdateClient) startUpdateInternal(source UpdateSource) {
 					})
 					return
 				}
-				
+
 				if n == 0 {
 					// EOF - we're done sending data
 					break
@@ -224,7 +226,7 @@ func (c *swupdateClient) startUpdateInternal(source UpdateSource) {
 					})
 					return
 				}
-				
+
 				c.bytesSent += int64(n)
 			}
 		}
@@ -420,7 +422,7 @@ func (c *swupdateClient) checkProgress() {
 	// Try to read progress from socket
 	var cProgress C.SwupdateProgress
 	result := C.swupdate_progress_receive(&cProgress)
-	
+
 	if result != 0 {
 		// Failed to read progress, continue
 		return
@@ -428,16 +430,16 @@ func (c *swupdateClient) checkProgress() {
 
 	// Convert C progress to Go progress
 	progress := Progress{
-		Status:         UpdateStatus(cProgress.status),
+		Status:          UpdateStatus(cProgress.status),
 		DownloadPercent: int(cProgress.dwl_percent),
-		DownloadBytes:  int64(cProgress.dwl_bytes),
-		TotalSteps:     int(cProgress.nsteps),
-		CurrentStep:    int(cProgress.cur_step),
-		StepPercent:    int(cProgress.cur_percent),
-		CurrentImage:   C.GoString(&cProgress.current_image[0]),
-		HandlerName:    C.GoString(&cProgress.handler_name[0]),
-		Message:        C.GoString(&cProgress.message[0]),
-		Source:         int(cProgress.source),
+		DownloadBytes:   int64(cProgress.dwl_bytes),
+		TotalSteps:      int(cProgress.nsteps),
+		CurrentStep:     int(cProgress.cur_step),
+		StepPercent:     int(cProgress.cur_percent),
+		CurrentImage:    C.GoString(&cProgress.current_image[0]),
+		HandlerName:     C.GoString(&cProgress.handler_name[0]),
+		Message:         C.GoString(&cProgress.message[0]),
+		Source:          int(cProgress.source),
 	}
 
 	c.mu.Lock()
@@ -445,8 +447,8 @@ func (c *swupdateClient) checkProgress() {
 	c.mu.Unlock()
 
 	c.notifySubscribers(UpdateEvent{
-		Type:    "progress",
-		Status:  progress.Status,
+		Type:     "progress",
+		Status:   progress.Status,
 		Progress: &progress,
 	})
 }
