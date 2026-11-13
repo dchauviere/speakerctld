@@ -1,0 +1,113 @@
+repos:
+  # Detect secrets and credentials in code
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.4.0
+    hooks:
+      - id: detect-secrets
+        args: ['--baseline', '.secrets.baseline']
+        exclude: >-
+          (?x)^(
+            # Go modules and dependencies
+            go\.mod|go\.sum|
+            # Binary files
+            \.bin$|\.exe$|\.so$|\.dll$|
+            # Test data that may contain mock secrets
+            testdata/.*|fixtures/.*|
+            # Generated files
+            generated/.*|vendor/.*
+          )$
+
+  # Gitleaks - Fast secrets detector
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.0
+    hooks:
+      - id: gitleaks
+        name: Gitleaks
+        description: Detect hardcoded secrets using Gitleaks
+        entry: gitleaks detect --no-git --redact --verbose
+        language: system
+        types: [text]
+        exclude: >-
+          (?x)^(
+            go\.mod|go\.sum|
+            \.bin$|\.exe$|\.so$|\.dll$|
+            testdata/.*|fixtures/.*|
+            generated/.*|vendor/.*
+          )$
+
+  # Generic grep-based secret detection as fallback
+  - repo: local
+    hooks:
+      - id: check-secrets
+        name: Check for secrets
+        description: Grep for common credential patterns
+        entry: bash -c 'grep -lE "(password|passwd|secret|api[_-]?key|token|credential|private[_-]?key|auth)" --include="*.go" --include="*.yaml" --include="*.yml" --include="*.json" --include="*.toml" --include="*.env" --include="*.txt" --include="*.md" --exclude-dir=.git --exclude-dir=vendor --exclude-dir=testdata --exclude-dir=fixtures . && echo "WARNING: Potential credentials found in above files!" && exit 1 || true'
+        language: system
+        pass_filenames: false
+        files: \.(go|yaml|yml|json|toml|env|txt|md)$
+
+  # Go-specific hooks
+  - repo: https://github.com/golangci/golangci-lint
+    rev: v1.59.0
+    hooks:
+      - id: golangci-lint
+        name: GolangCI-Lint
+        description: Run golangci-lint on Go files
+        entry: golangci-lint run --new --no-nocache --out-format=tab ./...
+        language: system
+        types: [go]
+        pass_filenames: false
+
+  # Go vet - checks for potential issues in Go code
+  - repo: https://github.com/golang/tools
+    rev: v0.21.0
+    hooks:
+      - id: go-vet
+        name: Go Vet
+        description: Run go vet on Go files
+        entry: go vet ./...
+        language: system
+        types: [go]
+        pass_filenames: false
+
+  # Trim trailing whitespace
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+        name: Trim trailing whitespace
+        description: Remove trailing whitespace from files
+        exclude: >-
+          (?x)^(
+            # Go files - let gofmt handle this
+            \.go$|
+            # Binary files
+            \.bin$|\.exe$|
+            # Generated files
+            generated/.*
+          )$
+
+  # Check for mixed line endings
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: mixed-line-ending
+        name: Mixed line ending
+        description: Ensure consistent line endings
+
+  # Check for files with UTF-8 BOM
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: fix-utf-8-bom
+        name: Fix UTF-8 BOM
+        description: Remove UTF-8 BOM from files
+
+  # Detect large files (>500KB)
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: check-added-large-files
+        name: Check large files
+        description: Prevent committing large files
+        args: ['--maxkb=500']

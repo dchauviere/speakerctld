@@ -64,19 +64,28 @@ build-arm:
 build-arm64:
 	GOOS=linux GOARCH=arm64 $(GOBUILD) -o bin/$(BINARY)-arm64 ./$(SRC_DIR)
 
+# Pre-commit hooks installation (requires pre-commit package: pip install pre-commit)
+pre-commit-install:
+	pre-commit install
+
+pre-commit-run:
+	pre-commit run --all-files
+
 # Show help
 help:
 	@echo "Available targets:"
-	@echo "  all           - Build the project (default)"
-	@echo "  build         - Build the project"
-	@echo "  debug         - Build with debug information"
-	@echo "  test          - Run all tests"
-	@echo "  test-coverage - Run tests with coverage report"
-	@echo "  test-race     - Run tests with race detector"
-	@echo "  lint          - Run linter"
-	@echo "  deps          - Download and tidy dependencies"
-	@echo "  clean         - Clean up build artifacts"
-	@echo "  install       - Install binary to /usr/local/bin"
-	@echo "  run           - Build and run"
-	@echo "  build-arm     - Build for Linux ARM"
-	@echo "  build-arm64   - Build for Linux ARM64"
+	@echo "  all              - Build the project (default)"
+	@echo "  build            - Build the project"
+	@echo "  debug            - Build with debug information"
+	@echo "  test             - Run all tests"
+	@echo "  test-coverage    - Run tests with coverage report"
+	@echo "  test-race        - Run tests with race detector"
+	@echo "  lint             - Run linter"
+	@echo "  deps             - Download and tidy dependencies"
+	@echo "  clean            - Clean up build artifacts"
+	@echo "  install          - Install binary to /usr/local/bin"
+	@echo "  run              - Build and run"
+	@echo "  build-arm        - Build for Linux ARM"
+	@echo "  build-arm64      - Build for Linux ARM64"
+	@echo "  pre-commit-install - Install pre-commit hooks"
+	@echo "  pre-commit-run    - Run pre-commit checks on all files"
