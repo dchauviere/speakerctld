@@ -1,0 +1,17 @@
+[Unit]
+Description=Speaker DHCP DNS
+
+Requires=speakerctld-hostapd.service
+After=speakerctld-hostapd.service
+Conflicts=dnsmasq.service
+After=dnsmasq.service
+
+[Service]
+Type=simple
+
+ExecStart=/usr/bin/dnsmasq \
+    --keep-in-foreground \
+    --conf-file=/run/speakerctld/dnsmasq.conf
+
+Restart=on-failure
+RestartSec=5

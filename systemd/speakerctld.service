@@ -1,0 +1,9 @@
+[Unit]
+Description=Speaker Manager Daemon
+
+[Service]
+
+ExecStart=/usr/bin/speakerctld
+
+Restart=always
+RestartSec=5

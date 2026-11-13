@@ -108,13 +108,15 @@ func (o *Orchestrator) handleFirstBootAP() error {
 
 // handleWifiConnect sets up Wi-Fi client mode.
 func (o *Orchestrator) handleWifiConnect() error {
-	// Generate wpa_supplicant config
-	if err := o.configGenerator.GenerateWpaSupplicantConfig(); err != nil {
+	// Configure Wi-Fi client connection using NetworkManager
+	// This replaces the old wpa_supplicant-based configuration
+	if err := o.configGenerator.ConfigureWifiClient(); err != nil {
 		return err
 	}
 
-	// Enable wifi-client.target which should start:
-	// - wpa_supplicant
+	// Enable wifi-client.target which should start NetworkManager
+	// Note: With NetworkManager integration, the target should start NetworkManager
+	// instead of (or in addition to) wpa_supplicant
 	if err := o.systemdManager.EnableTarget(systemd.TargetWifiClient); err != nil {
 		return err
 	}
@@ -124,7 +126,7 @@ func (o *Orchestrator) handleWifiConnect() error {
 		log.Printf("Warning: failed to cleanup old configs: %v", err)
 	}
 
-	log.Println("Wi-Fi client mode activated")
+	log.Println("Wi-Fi client mode activated with NetworkManager")
 	return nil
 }
 
