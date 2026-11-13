@@ -1,9 +1,29 @@
 [Unit]
-Description=Speaker Manager Daemon
+Description=Speaker Controller Daemon
+After=network.target systemd-hostnamed.service
+Wants=network.target
 
 [Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/var/lib/speakerctld
+Environment="DATA_DIR=/data"
+ExecStart=/usr/bin/speakerctld \
+    -interface wlan0 \
+    -captive-port 8080 \
+    -settings-port 8081 \
+    -data-dir /data
 
-ExecStart=/usr/bin/speakerctld
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=speakerctld
 
-Restart=always
-RestartSec=5
+# Required for SWUpdate integration via CGO
+Environment="SWUPDATE_SOCKET_CTRL_PATH=/tmp/sockinstctrl"
+Environment="SWUPDATE_SOCKET_PROGRESS_PATH=/tmp/swupdateprog"
+
+[Install]
+WantedBy=multi-user.target

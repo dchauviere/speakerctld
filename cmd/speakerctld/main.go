@@ -28,6 +28,9 @@ const DefaultCaptivePortalPort = "8080"
 // DefaultSettingsPort is the default port for the settings interface
 const DefaultSettingsPort = "8081"
 
+// DefaultDataDir is the default data directory
+const DefaultDataDir = "/data"
+
 // SpeakerCtld is the main application that manages the Speakerctld speaker network state.
 type SpeakerCtld struct {
 	stateMachine   state.StateMachine
@@ -37,10 +40,11 @@ type SpeakerCtld struct {
 	apiServer      *api.Server
 	stopChan       chan struct{}
 	doneChan       chan struct{}
+	dataDir        string
 }
 
 // NewSpeakerCtld creates a new instance of the speaker controller.
-func NewSpeakerCtld(wifiInterface, captivePort, settingsPort string) (*SpeakerCtld, error) {
+func NewSpeakerCtld(wifiInterface, captivePort, settingsPort, dataDir string) (*SpeakerCtld, error) {
 	// Initialize storage
 	st := storage.DefaultFileStorage()
 
@@ -58,6 +62,11 @@ func NewSpeakerCtld(wifiInterface, captivePort, settingsPort string) (*SpeakerCt
 		systemdMgr = nil
 	}
 
+	// Use provided data directory or default
+	if dataDir == "" {
+		dataDir = DefaultDataDir
+	}
+
 	// Initialize API server
 	apiServer, err := api.NewServer(
 		sm,
@@ -66,6 +75,7 @@ func NewSpeakerCtld(wifiInterface, captivePort, settingsPort string) (*SpeakerCt
 		wifiInterface,
 		captivePort,
 		settingsPort,
+		dataDir,
 	)
 	if err != nil {
 		log.Printf("Warning: failed to initialize API server: %v", err)
@@ -81,6 +91,7 @@ func NewSpeakerCtld(wifiInterface, captivePort, settingsPort string) (*SpeakerCt
 		apiServer:      apiServer,
 		stopChan:       make(chan struct{}),
 		doneChan:       make(chan struct{}),
+		dataDir:        dataDir,
 	}, nil
 }
 
@@ -402,14 +413,16 @@ func main() {
 	wifiInterface := flag.String("interface", DefaultWifiInterface, "WiFi interface to monitor")
 	captivePort := flag.String("captive-port", DefaultCaptivePortalPort, "Captive portal HTTP port")
 	settingsPort := flag.String("settings-port", DefaultSettingsPort, "Settings HTTP port")
+	dataDir := flag.String("data-dir", DefaultDataDir, "Data directory")
 	flag.Parse()
 
 	log.Printf("Starting Speakerctld Speaker Controller with WiFi interface: %s", *wifiInterface)
 	log.Printf("Captive portal will be available on port: %s", *captivePort)
 	log.Printf("Settings interface will be available on port: %s", *settingsPort)
+	log.Printf("Data directory: %s", *dataDir)
 
 	// Initialize the application
-	app, err := NewSpeakerCtld(*wifiInterface, *captivePort, *settingsPort)
+	app, err := NewSpeakerCtld(*wifiInterface, *captivePort, *settingsPort, *dataDir)
 	if err != nil {
 		log.Fatalf("Failed to initialize application: %v", err)
 	}
