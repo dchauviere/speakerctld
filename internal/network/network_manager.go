@@ -25,6 +25,9 @@ const (
 	NMDeviceTypeWifi = uint32(2)
 )
 
+// ConnectionPrefix is the prefix used for NetworkManager connection names
+const ConnectionPrefix = "Speaker-"
+
 // NetworkManagerClient provides high-level access to NetworkManager via DBus
 type NetworkManagerClient struct {
 	conn   *dbus.Conn
@@ -55,14 +58,14 @@ func (nmc *NetworkManagerClient) Close() {
 	}
 }
 
-// AddWifiConnection creates a new Wi-Fi connection and activates it.
+// AddWifiConnection creates a new volatile Wi-Fi connection and activates it.
 // If psk is empty, it creates an open network connection.
+// The connection is not saved to disk (volatile = true).
 func (nmc *NetworkManagerClient) AddWifiConnection(ssid, psk string) error {
-	// First, check if a connection with this SSID already exists and delete it
+	// First, cleanup any existing connections with this SSID
 	connections, err := nmc.GetConnectionsBySSID(ssid)
 	if err != nil {
 		// Non-critical, continue
-		// In production, you might want to log this
 	}
 	
 	for _, connPath := range connections {
@@ -73,7 +76,7 @@ func (nmc *NetworkManagerClient) AddWifiConnection(ssid, psk string) error {
 	}
 
 	// Build connection settings as a{sa{sv}}
-	connectionName := fmt.Sprintf("Speakerctld-%s", ssid)
+	connectionName := fmt.Sprintf("%s%s", ConnectionPrefix, ssid)
 	ssidBytes := []byte(ssid)
 	
 	// Settings structure: map[section]map[key]value
@@ -83,6 +86,7 @@ func (nmc *NetworkManagerClient) AddWifiConnection(ssid, psk string) error {
 			"id":          connectionName,
 			"uuid":        generateUUID(connectionName),
 			"autoconnect": true,
+			"volatile":    true, // Do not save to disk
 		},
 		"802-11-wireless": {
 			"ssid":    ssidBytes,
@@ -90,10 +94,11 @@ func (nmc *NetworkManagerClient) AddWifiConnection(ssid, psk string) error {
 			"hidden":  false,
 		},
 		"ipv4": {
-			"method": "auto",
+			"method": "auto", // DHCP
 		},
 		"ipv6": {
-			"method": "ignore",
+			"method":     "auto", // DHCPv6
+			"ip6-privacy": 0,      // RFC 4941 privacy extensions
 		},
 	}
 	
@@ -131,8 +136,6 @@ func (nmc *NetworkManagerClient) AddWifiConnection(ssid, psk string) error {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
 	
-	// Connection created and activated successfully
-	// We could wait for activation, but for simplicity we return here
 	return nil
 }
 
@@ -252,8 +255,8 @@ func (nmc *NetworkManagerClient) findWirelessDevice() (dbus.ObjectPath, error) {
 	return "", fmt.Errorf("no wireless device found")
 }
 
-// RemoveAllSpeakerctldConnections removes all connections created by this application
-func (nmc *NetworkManagerClient) RemoveAllSpeakerctldConnections() error {
+// RemoveAllSpeakerConnections removes all connections created by this application
+func (nmc *NetworkManagerClient) RemoveAllSpeakerConnections() error {
 	// Get all connections
 	settingsObj := nmc.conn.Object(NMService, dbus.ObjectPath("/org/freedesktop/NetworkManager/Settings"))
 	
@@ -291,9 +294,9 @@ func (nmc *NetworkManagerClient) RemoveAllSpeakerctldConnections() error {
 				if connMap, ok := connSettings.(map[string]interface{}); ok {
 					if id, ok := connMap["id"]; ok {
 						if idStr, ok := id.(string); ok {
-							// Check if this is a Speakerctld connection
-							if len(idStr) >= len(SpeakerctldConnectionPrefix) &&
-								idStr[:len(SpeakerctldConnectionPrefix)] == SpeakerctldConnectionPrefix {
+							// Check if this is a Speaker connection
+							if len(idStr) >= len(ConnectionPrefix) &&
+								idStr[:len(ConnectionPrefix)] == ConnectionPrefix {
 								if err := nmc.DeleteConnection(connPath); err != nil {
 									// Log but continue
 									continue
@@ -312,7 +315,6 @@ func (nmc *NetworkManagerClient) RemoveAllSpeakerctldConnections() error {
 // generateUUID creates a simple UUID based on connection name
 func generateUUID(name string) string {
 	// Simple deterministic UUID for consistency
-	// This uses a basic hash and should be replaced with proper UUID in production
 	hash := uint64(0)
 	for _, c := range name {
 		hash = hash*31 + uint64(c)
@@ -370,7 +372,8 @@ func NewWifiConnectionManager() (*WifiConnectionManager, error) {
 	}, nil
 }
 
-// Connect connects to a WiFi network using NetworkManager
+// Connect connects to a WiFi network using NetworkManager.
+// Creates a volatile connection that is not saved to disk.
 func (wcm *WifiConnectionManager) Connect(ssid, psk string) error {
 	return wcm.client.AddWifiConnection(ssid, psk)
 }
@@ -391,9 +394,9 @@ func (wcm *WifiConnectionManager) Disconnect(ssid string) error {
 	return nil
 }
 
-// Cleanup removes all Speakerctld-created connections
+// Cleanup removes all Speaker- prefixed connections
 func (wcm *WifiConnectionManager) Cleanup() error {
-	return wcm.client.RemoveAllSpeakerctldConnections()
+	return wcm.client.RemoveAllSpeakerConnections()
 }
 
 // Close closes the underlying DBus connection
@@ -401,7 +404,7 @@ func (wcm *WifiConnectionManager) Close() {
 	wcm.client.Close()
 }
 
-// ListConnections returns all saved WiFi connections (for debugging)
+// ListConnections returns all saved connection names (for debugging)
 func (wcm *WifiConnectionManager) ListConnections() ([]string, error) {
 	// Get all connections
 	settingsObj := wcm.client.conn.Object(NMService, dbus.ObjectPath("/org/freedesktop/NetworkManager/Settings"))

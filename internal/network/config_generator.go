@@ -11,9 +11,6 @@ import (
 // RuntimeDir is the directory for runtime files (tmpfs).
 const RuntimeDir = "/run/speakerctld"
 
-// SpeakerctldConnectionPrefix is the prefix used for NetworkManager connection names
-const SpeakerctldConnectionPrefix = "Speakerctld-"
-
 // State represents the speaker state (defined locally to avoid import cycle with state package)
 type State string
 
@@ -26,57 +23,44 @@ const (
 )
 
 // ConfigGenerator generates network configuration files for AP and client modes.
-// For WiFi client mode, it uses NetworkManager via DBus instead of wpa_supplicant.
+// For WiFi client mode, it uses NetworkManager via DBus exclusively (no wpa_supplicant fallback).
 type ConfigGenerator struct {
-	storage      storage.Storage
-	runtimeDir  string
-	nmManager   *WifiConnectionManager
-	useNM       bool
+	storage     storage.Storage
+	runtimeDir string
+	nmManager  *WifiConnectionManager
 }
 
 // ConfigGeneratorOption is a functional option for ConfigGenerator
-// This allows for flexible configuration without changing the constructor signature
 type ConfigGeneratorOption func(*ConfigGenerator)
-
-// WithNetworkManager enables NetworkManager integration
-func WithNetworkManager() ConfigGeneratorOption {
-	return func(cg *ConfigGenerator) {
-		cg.useNM = true
-	}
-}
 
 // WithNetworkManagerClient sets a custom NetworkManager client
 func WithNetworkManagerClient(client *WifiConnectionManager) ConfigGeneratorOption {
 	return func(cg *ConfigGenerator) {
 		cg.nmManager = client
-		cg.useNM = true
 	}
 }
 
 // NewConfigGenerator creates a new ConfigGenerator.
-// By default, it uses NetworkManager for WiFi client management.
-// Pass options to customize behavior (e.g., WithNetworkManager() to explicitly enable NM).
+// It always uses NetworkManager for WiFi client management.
 func NewConfigGenerator(st storage.Storage, opts ...ConfigGeneratorOption) *ConfigGenerator {
 	cg := &ConfigGenerator{
 		storage:     st,
 		runtimeDir: RuntimeDir,
-		useNM:      true, // Use NetworkManager by default
 	}
 
 	for _, opt := range opts {
 		opt(cg)
 	}
 
-	// Initialize NetworkManager client if needed
-	if cg.useNM && cg.nmManager == nil {
+	// Initialize NetworkManager client if not provided
+	if cg.nmManager == nil {
 		client, err := NewWifiConnectionManager()
 		if err != nil {
-			// Log error but continue - fallback to file-based config if needed
-			// In production, you might want to handle this more gracefully
-			cg.useNM = false
-		} else {
-			cg.nmManager = client
+			// NetworkManager is required, panic if not available
+			// In production, you might want to return an error instead
+			panic(fmt.Sprintf("NetworkManager is required but not available: %v", err))
 		}
+		cg.nmManager = client
 	}
 
 	return cg
@@ -178,58 +162,12 @@ rsn_pairwise=CCMP
 `, ssid, password)
 }
 
-// GenerateWpaSupplicantConfig is deprecated. Use ConfigureWifiClient instead.
-// This method is kept for backward compatibility but does nothing.
-func (g *ConfigGenerator) GenerateWpaSupplicantConfig() error {
-	// If NetworkManager is available, use it instead
-	if g.useNM && g.nmManager != nil {
-		return g.ConfigureWifiClient()
-	}
-	
-	// Fallback to old behavior if NM is not available
-	// Load Wi-Fi configuration
-	wifiConfig, err := g.storage.LoadWifiConfig()
-	if err != nil {
-		return fmt.Errorf("failed to load wifi config: %w", err)
-	}
-	if wifiConfig == nil {
-		// No configuration, remove existing file
-		configPath := filepath.Join(g.runtimeDir, "wpa_supplicant.conf")
-		if err := os.Remove(configPath); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to remove wpa_supplicant config: %w", err)
-		}
-		return nil
-	}
-
-	// Ensure runtime directory exists
-	if err := os.MkdirAll(g.runtimeDir, 0755); err != nil {
-		return fmt.Errorf("failed to create runtime directory: %w", err)
-	}
-
-	configPath := filepath.Join(g.runtimeDir, "wpa_supplicant.conf")
-
-	config := g.generateClientConfig(wifiConfig)
-
-	// Write atomically
-	tmpPath := configPath + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(config), 0644); err != nil {
-		return fmt.Errorf("failed to write wpa_supplicant config: %w", err)
-	}
-
-	// Sync and rename
-	if err := syncAndRename(tmpPath, configPath); err != nil {
-		return err
-	}
-
-	return nil
-}
-
 // ConfigureWifiClient configures WiFi client connection using NetworkManager.
-// This replaces the old wpa_supplicant-based configuration.
-// It loads the WiFi configuration from storage and creates/activates a NetworkManager connection.
+// This is the only method for WiFi client configuration - no wpa_supplicant fallback.
+// It creates a volatile connection that is not saved to disk.
 func (g *ConfigGenerator) ConfigureWifiClient() error {
-	if !g.useNM || g.nmManager == nil {
-		return fmt.Errorf("NetworkManager is not enabled or available")
+	if g.nmManager == nil {
+		return fmt.Errorf("NetworkManager client is not initialized")
 	}
 
 	// Load Wi-Fi configuration
@@ -239,10 +177,9 @@ func (g *ConfigGenerator) ConfigureWifiClient() error {
 	}
 
 	if wifiConfig == nil {
-		// No configuration, clean up any existing Speakerctld connections
+		// No configuration, clean up any existing Speaker connections
 		if err := g.nmManager.Cleanup(); err != nil {
 			// Non-critical error, continue
-			// In production, you might want to log this
 		}
 		return nil
 	}
@@ -255,37 +192,11 @@ func (g *ConfigGenerator) ConfigureWifiClient() error {
 	return nil
 }
 
-// generateClientConfig generates wpa_supplicant configuration for a client.
-func (g *ConfigGenerator) generateClientConfig(config *storage.WifiConfig) string {
-	// Simple configuration for WPA2-PSK
-	if config.PSK != "" {
-		return fmt.Sprintf(`ctrl_interface=DIR=/run/wpa_supplicant GROUP=netdev
-update_config=1
-country=FR
-
-network={
-    ssid="%s"
-    psk="%s"
-    key_mgmt=WPA-PSK
-}`, config.SSID, config.PSK)
-	}
-	// Open network
-	return fmt.Sprintf(`ctrl_interface=DIR=/run/wpa_supplicant GROUP=netdev
-update_config=1
-country=FR
-
-network={
-    ssid="%s"
-    key_mgmt=NONE
-}`, config.SSID)
-}
-
 // Cleanup removes all generated runtime configuration files and NetworkManager connections.
 func (g *ConfigGenerator) Cleanup() error {
-	// Clean up runtime files
+	// Clean up runtime files (hostapd only, no wpa_supplicant)
 	configs := []string{
 		"hostapd.conf",
-		"wpa_supplicant.conf",
 	}
 
 	for _, config := range configs {
@@ -295,11 +206,10 @@ func (g *ConfigGenerator) Cleanup() error {
 		}
 	}
 
-	// Clean up NetworkManager connections if enabled
-	if g.useNM && g.nmManager != nil {
+	// Clean up NetworkManager connections
+	if g.nmManager != nil {
 		if err := g.nmManager.Cleanup(); err != nil {
 			// Non-critical error, but we should try to close the connection
-			// In production, you might want to log this
 			g.nmManager.Close()
 			return fmt.Errorf("failed to clean up NetworkManager connections: %w", err)
 		}
