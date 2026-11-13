@@ -93,11 +93,8 @@ func (m *SystemdManager) EnableTarget(targetName string) error {
 	// Stop conflicting targets first
 	// This is a simplified approach - in production you'd need to know
 	// which targets to stop
-	if err := m.StopUnit("firstboot-ap.target"); err != nil && !isUnitNotFoundError(err) {
-		log.Printf("Warning: failed to stop firstboot-ap.target: %v", err)
-	}
-	if err := m.StopUnit("fallback-ap.target"); err != nil && !isUnitNotFoundError(err) {
-		log.Printf("Warning: failed to stop fallback-ap.target: %v", err)
+	if err := m.StopUnit("speakerctld-ap.target"); err != nil && !isUnitNotFoundError(err) {
+		log.Printf("Warning: failed to stop speakerctld-ap.target: %v", err)
 	}
 	if err := m.StopUnit("wifi-client.target"); err != nil && !isUnitNotFoundError(err) {
 		log.Printf("Warning: failed to stop wifi-client.target: %v", err)
@@ -119,9 +116,8 @@ func isUnitNotFoundError(err error) bool {
 
 // Target names for the Speakerctld speaker system
 const (
-	TargetFirstBootAP = "firstboot-ap.target"
-	TargetFallbackAP  = "fallback-ap.target"
-	TargetWifiClient  = "wifi-client.target"
+	TargetAP         = "speakerctld-ap.target"
+	TargetWifiClient = "wifi-client.target"
 )
 
 // Unit names for individual services

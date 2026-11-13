@@ -89,11 +89,11 @@ func (o *Orchestrator) handleFirstBootAP() error {
 		return err
 	}
 
-	// Enable firstboot-ap.target which should start:
+	// Enable ap.target which should start:
 	// - hostapd
 	// - dnsmasq
 	// - captive-portal
-	if err := o.systemdManager.EnableTarget(systemd.TargetFirstBootAP); err != nil {
+	if err := o.systemdManager.EnableTarget(systemd.TargetAP); err != nil {
 		return err
 	}
 
@@ -147,11 +147,11 @@ func (o *Orchestrator) handleFallbackAP() error {
 		return err
 	}
 
-	// Enable fallback-ap.target which should start:
+	// Enable ap.target which should start:
 	// - hostapd
 	// - dnsmasq
 	// - captive-portal
-	if err := o.systemdManager.EnableTarget(systemd.TargetFallbackAP); err != nil {
+	if err := o.systemdManager.EnableTarget(systemd.TargetAP); err != nil {
 		return err
 	}
 

@@ -15,32 +15,29 @@ import (
 	"github.com/david/speakerctld/internal/systemd"
 )
 
-// Server manages the embedded web servers for both captive portal and settings interfaces
+// Server manages the web server for both captive portal and settings interfaces
 type Server struct {
 	captiveHandler   *captive.Handler
 	settingsHandler  *settings.Handler
 	firmwareHandler  *firmware.Handler
-	captiveServer    *http.Server
-	settingsServer   *http.Server
-	wsHub           *websocket.Hub
+	server            *http.Server
+	wsHub             *websocket.Hub
 	stateMachine     state.StateMachine
 	storage          storage.Storage
 	systemdManager   *systemd.SystemdManager
 	swupdateInstaller swupdate.Installer
 	wifiInterface    string
-	captivePort      string
-	settingsPort     string
+	port             string
 	dataDir          string
 }
 
-// NewServer creates a new API server that manages both captive portal and settings interfaces
+// NewServer creates a new API server that manages the web interface
 func NewServer(
 	stateMachine state.StateMachine,
 	storage storage.Storage,
 	systemdManager *systemd.SystemdManager,
 	wifiInterface string,
-	captivePort string,
-	settingsPort string,
+	port string,
 	dataDir string,
 ) (*Server, error) {
 	
@@ -49,8 +46,7 @@ func NewServer(
 		storage:        storage,
 		systemdManager: systemdManager,
 		wifiInterface:  wifiInterface,
-		captivePort:    captivePort,
-		settingsPort:   settingsPort,
+		port:           port,
 		dataDir:        dataDir,
 	}
 
@@ -98,69 +94,166 @@ func NewServer(
 	return s, nil
 }
 
-// Start starts both the captive portal and settings web servers
+// Start starts the web server with dynamic routing based on system state
 func (s *Server) Start() error {
-	// Create multiplexer for settings server (settings + firmware + WebSocket)
-	settingsMux := http.NewServeMux()
-	settingsMux.Handle("/", s.settingsHandler)
-	
-	// Add firmware endpoints if available
-	if s.firmwareHandler != nil {
-		settingsMux.Handle("/api/firmware/", http.StripPrefix("/api/firmware", s.firmwareHandler))
-		wsHandler := websocket.NewWebSocketHandler(s.wsHub)
-		settingsMux.Handle("/ws", wsHandler)
-	}
+	// Create main multiplexer with dynamic routing
+	mux := s.createHandler()
 
-	// Start captive portal server
+	// Start single web server
 	go func() {
-		log.Printf("Starting captive portal server on :%s", s.captivePort)
-		s.captiveServer = &http.Server{
-			Addr:              ":" + s.captivePort,
-			Handler:           s.captiveHandler,
+		log.Printf("Starting web server on :%s", s.port)
+		s.server = &http.Server{
+			Addr:              ":" + s.port,
+			Handler:           mux,
 			ReadTimeout:       10 * time.Second,
 			WriteTimeout:      10 * time.Second,
 			IdleTimeout:       30 * time.Second,
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 		
-		if err := s.captiveServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("Captive portal server error: %v", err)
-		}
-	}()
-
-	// Start settings server
-	go func() {
-		log.Printf("Starting settings server on :%s", s.settingsPort)
-		s.settingsServer = &http.Server{
-			Addr:              ":" + s.settingsPort,
-			Handler:           settingsMux,
-			ReadTimeout:       10 * time.Second,
-			WriteTimeout:      10 * time.Second,
-			IdleTimeout:       30 * time.Second,
-			ReadHeaderTimeout: 5 * time.Second,
-		}
-		
-		if err := s.settingsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("Settings server error: %v", err)
+		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("Web server error: %v", err)
 		}
 	}()
 
 	return nil
 }
 
-// Stop stops both web servers
-func (s *Server) Stop() error {
-	// Stop captive portal server
-	if s.captiveServer != nil {
-		if err := s.captiveServer.Close(); err != nil {
-			log.Printf("Error stopping captive portal server: %v", err)
+// createHandler creates the main HTTP handler with dynamic routing based on state
+func (s *Server) createHandler() http.Handler {
+	mux := http.NewServeMux()
+	
+	// Main route handler - dynamically routes based on current state
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		currentState := s.stateMachine.CurrentState()
+		
+		switch currentState {
+		case state.FirstBootAP:
+			// In first boot mode, serve captive portal
+			s.captiveHandler.ServeHTTP(w, r)
+		case state.Online, state.FallbackAP:
+			// In online or fallback mode, serve settings interface
+			s.settingsHandler.ServeHTTP(w, r)
+		case state.WifiConnect:
+			// In connecting state, show a connecting page or redirect
+			http.Redirect(w, r, "/connecting", http.StatusFound)
+		default:
+			// Unknown state - serve settings as fallback or error
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte("Service unavailable - unknown state: " + string(currentState)))
 		}
+	})
+	
+	// Add firmware endpoints if available (accessible in all states)
+	if s.firmwareHandler != nil {
+		mux.Handle("/api/firmware/", http.StripPrefix("/api/firmware", s.firmwareHandler))
 	}
+	
+	// Add WebSocket endpoint if hub is available
+	if s.wsHub != nil {
+		mux.Handle("/ws", websocket.NewWebSocketHandler(s.wsHub))
+	}
+	
+	// Static files for captive portal (accessible in FIRSTBOOT_AP state)
+	mux.HandleFunc("/static/captive.css", func(w http.ResponseWriter, r *http.Request) {
+		if s.stateMachine.CurrentState() == state.FirstBootAP {
+			s.captiveHandler.ServeHTTP(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	
+	mux.HandleFunc("/static/captive.js", func(w http.ResponseWriter, r *http.Request) {
+		if s.stateMachine.CurrentState() == state.FirstBootAP {
+			s.captiveHandler.ServeHTTP(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	
+	// Static files for settings (accessible in ONLINE or FALLBACK_AP state)
+	mux.HandleFunc("/static/settings.css", func(w http.ResponseWriter, r *http.Request) {
+		currentState := s.stateMachine.CurrentState()
+		if currentState == state.Online || currentState == state.FallbackAP {
+			s.settingsHandler.ServeHTTP(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	
+	mux.HandleFunc("/static/settings.js", func(w http.ResponseWriter, r *http.Request) {
+		currentState := s.stateMachine.CurrentState()
+		if currentState == state.Online || currentState == state.FallbackAP {
+			s.settingsHandler.ServeHTTP(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+	
+	// API endpoints for captive portal (WiFi scan and connect)
+	mux.HandleFunc("/api/wifi/scan", func(w http.ResponseWriter, r *http.Request) {
+		if s.stateMachine.CurrentState() == state.FirstBootAP {
+			s.captiveHandler.ServeHTTP(w, r)
+		} else {
+			http.Error(w, "Not available in current state", http.StatusForbidden)
+		}
+	})
+	
+	mux.HandleFunc("/api/wifi", func(w http.ResponseWriter, r *http.Request) {
+		if s.stateMachine.CurrentState() == state.FirstBootAP {
+			s.captiveHandler.ServeHTTP(w, r)
+		} else {
+			http.Error(w, "Not available in current state", http.StatusForbidden)
+		}
+	})
+	
+	// API endpoints for settings
+	mux.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {
+		currentState := s.stateMachine.CurrentState()
+		if currentState == state.Online || currentState == state.FallbackAP {
+			s.settingsHandler.ServeHTTP(w, r)
+		} else {
+			http.Error(w, "Not available in current state", http.StatusForbidden)
+		}
+	})
+	
+	mux.HandleFunc("/api/system/info", func(w http.ResponseWriter, r *http.Request) {
+		currentState := s.stateMachine.CurrentState()
+		if currentState == state.Online || currentState == state.FallbackAP {
+			s.settingsHandler.ServeHTTP(w, r)
+		} else {
+			http.Error(w, "Not available in current state", http.StatusForbidden)
+		}
+	})
+	
+	mux.HandleFunc("/api/firmware/info", func(w http.ResponseWriter, r *http.Request) {
+		currentState := s.stateMachine.CurrentState()
+		if currentState == state.Online || currentState == state.FallbackAP {
+			s.settingsHandler.ServeHTTP(w, r)
+		} else {
+			http.Error(w, "Not available in current state", http.StatusForbidden)
+		}
+	})
+	
+	mux.HandleFunc("/api/firmware/check", func(w http.ResponseWriter, r *http.Request) {
+		currentState := s.stateMachine.CurrentState()
+		if currentState == state.Online || currentState == state.FallbackAP {
+			s.settingsHandler.ServeHTTP(w, r)
+		} else {
+			http.Error(w, "Not available in current state", http.StatusForbidden)
+		}
+	})
+	
+	return mux
+}
 
-	// Stop settings server
-	if s.settingsServer != nil {
-		if err := s.settingsServer.Close(); err != nil {
-			log.Printf("Error stopping settings server: %v", err)
+// Stop stops the web server
+func (s *Server) Stop() error {
+	// Stop web server
+	if s.server != nil {
+		if err := s.server.Close(); err != nil {
+			log.Printf("Error stopping web server: %v", err)
 		}
 	}
 
@@ -193,17 +286,9 @@ func (s *Server) Stop() error {
 	return nil
 }
 
-// IsCaptivePortalAvailable checks if the captive portal should be available
-// (only in FIRSTBOOT_AP state)
-func (s *Server) IsCaptivePortalAvailable() bool {
-	return s.stateMachine.CurrentState() == state.FirstBootAP
-}
-
-// IsSettingsAvailable checks if the settings interface should be available
-// (in ONLINE or FALLBACK_AP states)
-func (s *Server) IsSettingsAvailable() bool {
-	currentState := s.stateMachine.CurrentState()
-	return currentState == state.Online || currentState == state.FallbackAP
+// GetCurrentState returns the current state of the system
+func (s *Server) GetCurrentState() state.State {
+	return s.stateMachine.CurrentState()
 }
 
 // forwardSWUpdateEvents forwards SWUpdate events to WebSocket clients

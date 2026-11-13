@@ -18,8 +18,7 @@ systemd
 ├── hostapd.service
 ├── dnsmasq.service
 ├── captive-portal.service
-├── firstboot-ap.target
-├── fallback-ap.target
+├── speakerctld-ap.target
 └── wifi-client.target
 
 Go-based Manager

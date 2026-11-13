@@ -22,11 +22,8 @@ const StateCheckInterval = 10 * time.Second
 // DefaultWifiInterface is the default WiFi interface to monitor.
 const DefaultWifiInterface = "wlan0"
 
-// DefaultCaptivePortalPort is the default port for the captive portal
-const DefaultCaptivePortalPort = "8080"
-
-// DefaultSettingsPort is the default port for the settings interface
-const DefaultSettingsPort = "8081"
+// DefaultPort is the default port for the web server
+const DefaultPort = "8080"
 
 // DefaultDataDir is the default data directory
 const DefaultDataDir = "/data"
@@ -44,7 +41,7 @@ type SpeakerCtld struct {
 }
 
 // NewSpeakerCtld creates a new instance of the speaker controller.
-func NewSpeakerCtld(wifiInterface, captivePort, settingsPort, dataDir string) (*SpeakerCtld, error) {
+func NewSpeakerCtld(wifiInterface, port, dataDir string) (*SpeakerCtld, error) {
 	// Initialize storage
 	st := storage.DefaultFileStorage()
 
@@ -73,8 +70,7 @@ func NewSpeakerCtld(wifiInterface, captivePort, settingsPort, dataDir string) (*
 		st,
 		systemdMgr,
 		wifiInterface,
-		captivePort,
-		settingsPort,
+		port,
 		dataDir,
 	)
 	if err != nil {
@@ -316,15 +312,11 @@ func (s *SpeakerCtld) activateSystemdTargetForState(target state.State) {
 
 	var targetName string
 	switch target {
-	case state.FirstBootAP:
-		targetName = systemd.TargetFirstBootAP
-	case state.WifiConnect:
-		targetName = systemd.TargetWifiClient
-	case state.Online:
+	case state.FirstBootAP, state.FallbackAP:
+		targetName = systemd.TargetAP
+	case state.WifiConnect, state.Online:
 		// Online state uses WiFi client target
 		targetName = systemd.TargetWifiClient
-	case state.FallbackAP:
-		targetName = systemd.TargetFallbackAP
 	default:
 		log.Printf("Unknown state for target activation: %s", target)
 		return
@@ -338,9 +330,9 @@ func (s *SpeakerCtld) activateSystemdTargetForState(target state.State) {
 
 // ensureProvisioningMode makes sure the device is in provisioning mode (BLE/Improv active).
 func (s *SpeakerCtld) ensureProvisioningMode() {
-	// Activate firstboot-ap target which should start BLE/Improv services
+	// Activate ap target which should start BLE/Improv services
 	if s.systemdManager != nil {
-		if err := s.systemdManager.EnableTarget(systemd.TargetFirstBootAP); err != nil {
+		if err := s.systemdManager.EnableTarget(systemd.TargetAP); err != nil {
 			log.Printf("Error enabling provisioning mode: %v", err)
 		}
 	}
@@ -349,7 +341,7 @@ func (s *SpeakerCtld) ensureProvisioningMode() {
 // ensureFallbackMode makes sure the device is in fallback AP mode.
 func (s *SpeakerCtld) ensureFallbackMode() {
 	if s.systemdManager != nil {
-		if err := s.systemdManager.EnableTarget(systemd.TargetFallbackAP); err != nil {
+		if err := s.systemdManager.EnableTarget(systemd.TargetAP); err != nil {
 			log.Printf("Error enabling fallback mode: %v", err)
 		}
 	}
@@ -411,18 +403,16 @@ func (s *SpeakerCtld) Start() {
 func main() {
 	// Parse command line flags
 	wifiInterface := flag.String("interface", DefaultWifiInterface, "WiFi interface to monitor")
-	captivePort := flag.String("captive-port", DefaultCaptivePortalPort, "Captive portal HTTP port")
-	settingsPort := flag.String("settings-port", DefaultSettingsPort, "Settings HTTP port")
+	port := flag.String("port", DefaultPort, "HTTP port for web server")
 	dataDir := flag.String("data-dir", DefaultDataDir, "Data directory")
 	flag.Parse()
 
 	log.Printf("Starting Speakerctld Speaker Controller with WiFi interface: %s", *wifiInterface)
-	log.Printf("Captive portal will be available on port: %s", *captivePort)
-	log.Printf("Settings interface will be available on port: %s", *settingsPort)
+	log.Printf("Web server will be available on port: %s", *port)
 	log.Printf("Data directory: %s", *dataDir)
 
 	// Initialize the application
-	app, err := NewSpeakerCtld(*wifiInterface, *captivePort, *settingsPort, *dataDir)
+	app, err := NewSpeakerCtld(*wifiInterface, *port, *dataDir)
 	if err != nil {
 		log.Fatalf("Failed to initialize application: %v", err)
 	}
