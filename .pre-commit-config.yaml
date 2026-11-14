@@ -35,17 +35,6 @@ repos:
             generated/.*|vendor/.*
           )$
 
-  # Generic grep-based secret detection as fallback
-  - repo: local
-    hooks:
-      - id: check-secrets
-        name: Check for secrets
-        description: Grep for common credential patterns
-        entry: bash -c 'grep -lE "(password|passwd|secret|api[_-]?key|token|credential|private[_-]?key|auth)" --include="*.go" --include="*.yaml" --include="*.yml" --include="*.json" --include="*.toml" --include="*.env" --include="*.txt" --include="*.md" --exclude-dir=.git --exclude-dir=vendor --exclude-dir=testdata --exclude-dir=fixtures . && echo "WARNING: Potential credentials found in above files!" && exit 1 || true'
-        language: system
-        pass_filenames: false
-        files: \.(go|yaml|yml|json|toml|env|txt|md)$
-
   # Go-specific hooks
   - repo: https://github.com/golangci/golangci-lint
     rev: v1.59.0

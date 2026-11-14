@@ -236,59 +236,6 @@ swupdate -d
 
 ## Troubleshooting
 
-### CGO Compilation Errors
-
-**Error**: `exec: "pkg-config": executable file not found`
-
-**Solution**: Install pkg-config
-
-```bash
-sudo apt-get install pkg-config
-```
-
-**Error**: `cannot find -lswupdate`
-
-**Solution**: Install SWUpdate development files
-
-```bash
-# On Ubuntu/Debian
-sudo apt-get install swupdate-dev
-
-# On Yocto
-# Ensure SWUpdate is in IMAGE_INSTALL and dev packages are available
-```
-
-**Error**: Header files not found
-
-**Solution**: Set include path
-
-```bash
-export CGO_CFLAGS="-I/path/to/swupdate/include -Iinternal/swupdate/c_wrapper"
-```
-
-### Cross-Compilation Errors
-
-**Error**: Incompatible pointer types
-
-**Solution**: Ensure cross-compiler is compatible
-
-```bash
-# Verify cross-compiler
-arm-linux-gnueabihf-gcc --version
-
-# Ensure it's compatible with your Go version
-```
-
-**Error**: Linker errors
-
-**Solution**: Set correct linker
-
-```bash
-export CC=arm-linux-gnueabihf-gcc
-export CXX=arm-linux-gnueabihf-g++
-export LD=arm-linux-gnueabihf-gcc
-```
-
 ### Yocto Build Errors
 
 **Error**: Recipe not found
@@ -396,15 +343,6 @@ page; restrict access to the management network.
 
 ### Environment Variables
 
-```bash
-# Socket paths (optional)
-export SWUPDATE_SOCKET_CTRL_PATH=/tmp/sockinstctrl
-export SWUPDATE_SOCKET_PROGRESS_PATH=/tmp/swupdateprog
-
-# Go build tags (for debugging)
-export GODEBUG=cgocheck=1
-```
-
 ## File Locations
 
 ### Source Files
@@ -426,13 +364,6 @@ export GODEBUG=cgocheck=1
 │   ├── systemd/
 │   ├── network/
 │   └── swupdate/
-│       ├── c_wrapper/
-│       │   ├── swupdate_wrapper.h
-│       │   └── swupdate_wrapper.c
-│       ├── types.go
-│       ├── installer_cgo.go
-│       ├── installer_nocgo.go
-│       └── README.md
 ├── systemd/
 │   └── speakerctld.service
 ├── docs/
@@ -569,12 +500,8 @@ rm -rf bin/
 
 ## Final Notes
 
-1. **CGO Requirement**: SWUpdate integration requires CGO. Without CGO, the application will run but firmware update functionality will return errors.
+1. **SWUpdate Daemon**: The SWUpdate daemon must be running on the target device for updates to work.
 
-2. **Socket Permissions**: Ensure the application has permissions to access SWUpdate sockets (typically `/tmp/sockinstctrl` and `/tmp/swupdateprog`).
+2. **Resource Limits**: Large firmware updates may require significant memory. Adjust buffer sizes as needed.
 
-3. **SWUpdate Daemon**: The SWUpdate daemon must be running on the target device for updates to work.
-
-4. **Resource Limits**: Large firmware updates may require significant memory. Adjust buffer sizes as needed.
-
-5. **Security**: Ensure proper authentication and authorization for firmware update endpoints in production.
+3. **Security**: Ensure proper authentication and authorization for firmware update endpoints in production.

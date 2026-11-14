@@ -13,23 +13,13 @@ BINARY=speakerctld
 # Source files
 SRC_DIR=cmd/speakerctld
 
-# SWUpdate paths (can be overridden)
-SWUPDATE_CTRL_SOCKET?=/tmp/sockinstctrl
-SWUPDATE_PROG_SOCKET?=/tmp/swupdateprog
-
-# CGO flags for SWUpdate integration
-CGO_CFLAGS=-Iinternal/swupdate/c_wrapper
-CGO_LDFLAGS=-lswupdate
-
 all: build
 
 build: deps
-	CGO_ENABLED=1 CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" \
 	$(GOBUILD) -o bin/$(BINARY) ./$(SRC_DIR)
 
 # Build with debug information
 debug: deps
-	CGO_ENABLED=1 CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" \
 	$(GOBUILD) -o bin/$(BINARY) -v ./$(SRC_DIR)
 
 # Run tests
@@ -60,29 +50,25 @@ clean:
 
 # Install the binary
 install: deps
-	CGO_ENABLED=1 CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" \
 	$(GOBUILD) -o /usr/local/bin/$(BINARY) ./$(SRC_DIR)
 
 # Run the application
 run: deps
-	CGO_ENABLED=1 CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" \
 	$(GOBUILD) -o /tmp/$(BINARY) && /tmp/$(BINARY)
 
 # Build for Linux ARM (Raspberry Pi) with CGO
 build-arm: deps
-	GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 \
+	GOOS=linux GOARCH=arm GOARM=7 \
 	$(GOBUILD) -o bin/$(BINARY)-arm ./$(SRC_DIR)
 
 # Build for Linux ARM64 with CGO
 build-arm64: deps
-	GOOS=linux GOARCH=arm64 CGO_ENABLED=1 \
-	CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" \
+	GOOS=linux GOARCH=arm64 \
 	$(GOBUILD) -o bin/$(BINARY)-arm64 ./$(SRC_DIR)
 
 # Build for local development with SWUpdate socket paths
 build-dev: deps
-	CGO_ENABLED=1 CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" \
-	$(GOBUILD) -o bin/$(BINARY) -ldflags="-X main.DefaultCtrlSocketPath=$(SWUPDATE_CTRL_SOCKET) -X main.DefaultProgSocketPath=$(SWUPDATE_PROG_SOCKET)" ./$(SRC_DIR)
+	$(GOBUILD) -o bin/$(BINARY) ./$(SRC_DIR)
 
 # Pre-commit hooks installation (requires pre-commit package: pip install pre-commit)
 pre-commit-install:
@@ -93,7 +79,6 @@ pre-commit-run:
 
 # Build and run with data directory
 run-dev:
-	CGO_ENABLED=1 CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" \
 	$(GOBUILD) -o /tmp/$(BINARY) && /tmp/$(BINARY) -data-dir /tmp/speakerctld-data
 
 # Show help
