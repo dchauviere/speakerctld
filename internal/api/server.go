@@ -99,18 +99,18 @@ func (s *Server) Start() error {
 	// Create main multiplexer with dynamic routing
 	mux := s.createHandler()
 
+	s.server = &http.Server{
+		Addr:              ":" + s.port,
+		Handler:           mux,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
 	// Start single web server
 	go func() {
 		log.Printf("Starting web server on :%s", s.port)
-		s.server = &http.Server{
-			Addr:              ":" + s.port,
-			Handler:           mux,
-			ReadTimeout:       10 * time.Second,
-			WriteTimeout:      10 * time.Second,
-			IdleTimeout:       30 * time.Second,
-			ReadHeaderTimeout: 5 * time.Second,
-		}
-		
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("Web server error: %v", err)
 		}
@@ -275,7 +275,6 @@ func (s *Server) Stop() error {
 		if err := s.swupdateInstaller.Close(); err != nil {
 			log.Printf("Error closing SWUpdate installer: %v", err)
 		}
-		s.swupdateInstaller = nil
 	}
 
 	// Close handlers

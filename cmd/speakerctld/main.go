@@ -5,7 +5,6 @@ import (
 	"flag"
 	"log"
 	"net"
-	"os"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -30,13 +29,18 @@ const DefaultDataDir = "/data"
 
 // SpeakerCtld is the main application that manages the Speakerctld speaker network state.
 type SpeakerCtld struct {
-	orchestrator   *state.Orchestrator
+	orchestrator   orchestrator
 	storage        storage.Storage
 	wifiInterface  string
 	apiServer      *api.Server
-	stopChan       chan struct{}
 	doneChan       chan struct{}
 	dataDir        string
+}
+
+type orchestrator interface {
+	state.StateMachine
+	TransitionTo(state.State) error
+	Close()
 }
 
 // NewSpeakerCtld creates a new instance of the speaker controller.
@@ -78,7 +82,6 @@ func NewSpeakerCtld(wifiInterface, port, dataDir string) (*SpeakerCtld, error) {
 		storage:        st,
 		wifiInterface:  wifiInterface,
 		apiServer:      apiServer,
-		stopChan:       make(chan struct{}),
 		doneChan:       make(chan struct{}),
 		dataDir:        dataDir,
 	}, nil
@@ -86,9 +89,12 @@ func NewSpeakerCtld(wifiInterface, port, dataDir string) (*SpeakerCtld, error) {
 
 // Run starts the main application loop.
 func (s *SpeakerCtld) Run() error {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	return s.run(ctx)
+}
 
+func (s *SpeakerCtld) run(ctx context.Context) error {
 	// Log initial state
 	currentState := s.orchestrator.CurrentState()
 	log.Printf("Starting speakerctld, current state: %s", currentState)
@@ -102,17 +108,6 @@ func (s *SpeakerCtld) Run() error {
 		}
 	}
 
-	// Handle signals for graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		<-sigChan
-		log.Println("Received shutdown signal")
-		close(s.stopChan)
-		cancel()
-	}()
-
 	// Start monitoring goroutine
 	go s.monitorStateAndNetwork(ctx)
 
@@ -123,7 +118,8 @@ func (s *SpeakerCtld) Run() error {
 	}
 
 	// Wait for shutdown
-	<-s.doneChan
+	<-ctx.Done()
+	log.Println("Received shutdown signal")
 
 	// Cleanup
 	if s.apiServer != nil {
@@ -150,9 +146,6 @@ func (s *SpeakerCtld) monitorStateAndNetwork(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			log.Println("State monitor stopped")
-			return
-		case <-s.stopChan:
-			log.Println("State monitor shutting down")
 			return
 		case <-ticker.C:
 			s.handleStateTransitions()

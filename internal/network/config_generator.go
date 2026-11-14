@@ -300,10 +300,7 @@ func (g *ConfigGenerator) ConfigureWifiClient() error {
 
 	if wifiConfig == nil {
 		// No configuration, clean up any existing Speaker connections
-		if err := g.nmManager.Cleanup(); err != nil {
-			// Non-critical error, continue
-		}
-		return nil
+		return g.CleanupWifiConnections()
 	}
 
 	// Connect using NetworkManager
@@ -314,9 +311,8 @@ func (g *ConfigGenerator) ConfigureWifiClient() error {
 	return nil
 }
 
-// Cleanup removes all generated runtime configuration files and NetworkManager connections.
-func (g *ConfigGenerator) Cleanup() error {
-	// Clean up runtime files
+// CleanupAPConfigs removes generated access point configuration files.
+func (g *ConfigGenerator) CleanupAPConfigs() error {
 	configs := []string{
 		"hostapd.conf",
 		"dnsmasq.conf",
@@ -329,18 +325,26 @@ func (g *ConfigGenerator) Cleanup() error {
 		}
 	}
 
-	// Clean up NetworkManager connections
+	return nil
+}
+
+// CleanupWifiConnections removes connections created by speakerctld.
+func (g *ConfigGenerator) CleanupWifiConnections() error {
+	if g.nmManager == nil {
+		return fmt.Errorf("NetworkManager client is not initialized")
+	}
+	if err := g.nmManager.Cleanup(); err != nil {
+		return fmt.Errorf("failed to clean up NetworkManager connections: %w", err)
+	}
+	return nil
+}
+
+// Close releases the NetworkManager client without changing network configuration.
+func (g *ConfigGenerator) Close() {
 	if g.nmManager != nil {
-		if err := g.nmManager.Cleanup(); err != nil {
-			// Non-critical error, but we should try to close the connection
-			g.nmManager.Close()
-			return fmt.Errorf("failed to clean up NetworkManager connections: %w", err)
-		}
 		g.nmManager.Close()
 		g.nmManager = nil
 	}
-
-	return nil
 }
 
 // syncAndRename performs an atomic file write by syncing and renaming.

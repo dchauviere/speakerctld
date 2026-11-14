@@ -2,6 +2,8 @@ package network
 
 import (
 	"fmt"
+	"log"
+	"strings"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -37,7 +39,7 @@ type NetworkManagerClient struct {
 // NewNetworkManagerClient creates a new NetworkManager client
 func NewNetworkManagerClient() (*NetworkManagerClient, error) {
 	// Connect to system bus
-	conn, err := dbus.SystemBus()
+	conn, err := dbus.ConnectSystemBus()
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to system bus: %w", err)
 	}
@@ -54,7 +56,9 @@ func NewNetworkManagerClient() (*NetworkManagerClient, error) {
 // Close closes the DBus connection
 func (nmc *NetworkManagerClient) Close() {
 	if nmc.conn != nil {
-		nmc.conn.Close()
+		if err := nmc.conn.Close(); err != nil {
+			log.Printf("Warning: failed to close NetworkManager D-Bus connection: %v", err)
+		}
 	}
 }
 
@@ -141,10 +145,8 @@ func (nmc *NetworkManagerClient) AddWifiConnection(ssid, psk string) error {
 
 // DeleteConnection removes a connection by its path
 func (nmc *NetworkManagerClient) DeleteConnection(path dbus.ObjectPath) error {
-	// Use Settings interface
-	settingsObj := nmc.conn.Object(NMService, dbus.ObjectPath("/org/freedesktop/NetworkManager/Settings"))
-	
-	call := settingsObj.Call("org.freedesktop.NetworkManager.Settings.DeleteConnection", 0, path)
+	connObj := nmc.conn.Object(NMService, path)
+	call := connObj.Call("org.freedesktop.NetworkManager.Settings.Connection.Delete", 0)
 	if call.Err != nil {
 		return fmt.Errorf("failed to delete connection: %w", call.Err)
 	}
@@ -274,37 +276,21 @@ func (nmc *NetworkManagerClient) RemoveAllSpeakerConnections() error {
 	// Delete connections that match our naming pattern
 	for _, connPath := range connectionPaths {
 		connObj := nmc.conn.Object(NMService, connPath)
-		
-		// Get Settings property to check connection ID
-		var settingsVal interface{}
-		
-		propsCall := connObj.Call("org.freedesktop.DBus.Properties.Get", 0,
-			"org.freedesktop.NetworkManager.Settings.Connection", "Settings")
-		
-		if propsCall.Err != nil {
-			continue
+		var settings map[string]map[string]dbus.Variant
+		call := connObj.Call("org.freedesktop.NetworkManager.Settings.Connection.GetSettings", 0)
+		if call.Err != nil {
+			return fmt.Errorf("failed to get settings for connection %s: %w", connPath, call.Err)
 		}
-		
-		if err := propsCall.Store(&settingsVal); err != nil {
-			continue
+		if err := call.Store(&settings); err != nil {
+			return fmt.Errorf("failed to parse settings for connection %s: %w", connPath, err)
 		}
-		
-		if settingsMap, ok := settingsVal.(map[string]interface{}); ok {
-			if connSettings, ok := settingsMap["connection"]; ok {
-				if connMap, ok := connSettings.(map[string]interface{}); ok {
-					if id, ok := connMap["id"]; ok {
-						if idStr, ok := id.(string); ok {
-							// Check if this is a Speaker connection
-							if len(idStr) >= len(ConnectionPrefix) &&
-								idStr[:len(ConnectionPrefix)] == ConnectionPrefix {
-								if err := nmc.DeleteConnection(connPath); err != nil {
-									// Log but continue
-									continue
-								}
-							}
-						}
-					}
-				}
+		id, ok := settings["connection"]["id"].Value().(string)
+		if !ok {
+			return fmt.Errorf("missing or invalid ID for connection %s", connPath)
+		}
+		if strings.HasPrefix(id, ConnectionPrefix) {
+			if err := nmc.DeleteConnection(connPath); err != nil {
+				return fmt.Errorf("failed to remove connection %s: %w", connPath, err)
 			}
 		}
 	}
@@ -325,11 +311,15 @@ func generateUUID(name string) string {
 
 // EnsureNetworkManagerRunning checks if NetworkManager is running and accessible
 func EnsureNetworkManagerRunning() error {
-	conn, err := dbus.SystemBus()
+	conn, err := dbus.ConnectSystemBus()
 	if err != nil {
 		return fmt.Errorf("failed to connect to system bus: %w", err)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			log.Printf("Warning: failed to close NetworkManager check D-Bus connection: %v", err)
+		}
+	}()
 	
 	// Try to access NetworkManager
 	obj := conn.Object(NMService, dbus.ObjectPath(NMPath))

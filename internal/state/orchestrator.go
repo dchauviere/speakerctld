@@ -47,6 +47,9 @@ func NewOrchestrator(st storage.Storage, deviceID string) (*Orchestrator, error)
 
 // Close cleans up resources.
 func (o *Orchestrator) Close() {
+	if o.configGenerator != nil {
+		o.configGenerator.Close()
+	}
 	if o.systemdManager != nil {
 		o.systemdManager.Close()
 	}
@@ -59,18 +62,25 @@ func (o *Orchestrator) GetSystemdManager() *systemd.SystemdManager {
 
 // TransitionTo performs a state transition and updates the system accordingly.
 // This includes:
-// 1. Validating and executing the state transition
+// 1. Validating and executing the state transition (unless already in the target state)
 // 2. Generating appropriate configuration files
 // 3. Starting/stopping systemd targets
 func (o *Orchestrator) TransitionTo(target State) error {
-	// First, attempt the state transition
-	if err := o.stateMachine.Transition(target); err != nil {
-		return err
+	// Check if we're already in the target state - if so, just re-apply the setup
+	// This is important for idempotent initialization on startup
+	currentState := o.stateMachine.CurrentState()
+	if currentState != target {
+		// Only attempt transition if changing state
+		if err := o.stateMachine.Transition(target); err != nil {
+			return err
+		}
+		log.Printf("State transitioned to: %s", target)
+	} else {
+		// Already in target state - just re-apply the setup for initialization
+		log.Printf("Already in state %s, re-applying setup", target)
 	}
 
-	log.Printf("State transitioned to: %s", target)
-
-	// Handle state-specific actions
+	// Handle state-specific actions regardless of whether we transitioned
 	switch target {
 	case FirstBootAP:
 		return o.handleFirstBootAP()
@@ -103,7 +113,7 @@ func (o *Orchestrator) handleFirstBootAP() error {
 	}
 
 	// Clean up client mode config
-	if err := o.configGenerator.Cleanup(); err != nil {
+	if err := o.configGenerator.CleanupWifiConnections(); err != nil {
 		log.Printf("Warning: failed to cleanup old configs: %v", err)
 	}
 
@@ -127,7 +137,7 @@ func (o *Orchestrator) handleWifiConnect() error {
 	}
 
 	// Clean up AP mode config
-	if err := o.configGenerator.Cleanup(); err != nil {
+	if err := o.configGenerator.CleanupAPConfigs(); err != nil {
 		log.Printf("Warning: failed to cleanup old configs: %v", err)
 	}
 
@@ -161,7 +171,7 @@ func (o *Orchestrator) handleFallbackAP() error {
 	}
 
 	// Clean up client mode config
-	if err := o.configGenerator.Cleanup(); err != nil {
+	if err := o.configGenerator.CleanupWifiConnections(); err != nil {
 		log.Printf("Warning: failed to cleanup old configs: %v", err)
 	}
 

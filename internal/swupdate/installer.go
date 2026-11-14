@@ -22,7 +22,6 @@ type simpleInstaller struct {
 	progress    Progress
 	subscribers []chan UpdateEvent
 	closeChan   chan struct{}
-	closeDone   chan struct{}
 	cmd         *exec.Cmd
 	ctx         context.Context
 	ctxCancel   context.CancelFunc
@@ -49,7 +48,6 @@ func NewInstallerWithPaths(ctrlSocketPath, progSocketPath string) (Installer, er
 		running:    0,
 		status:     StatusIdle,
 		closeChan:  make(chan struct{}),
-		closeDone:  make(chan struct{}),
 		bufferSize: DefaultBufferSize,
 	}
 
@@ -284,37 +282,38 @@ func (c *simpleInstaller) monitorCommand(cmd *exec.Cmd, swuFilePath string) {
 	err := cmd.Wait()
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
+	var event UpdateEvent
 	if err != nil {
 		// Command failed
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			status := exitErr.Sys().(syscall.WaitStatus)
 			c.status = StatusFailure
-			c.notifySubscribers(UpdateEvent{
+			event = UpdateEvent{
 				Type:    "failed",
 				Status:  StatusFailure,
 				Error:   fmt.Errorf("swupdate failed with exit code %d", status.ExitStatus()),
 				Message: fmt.Sprintf("SWUpdate failed with exit code %d", status.ExitStatus()),
-			})
+			}
 		} else {
 			c.status = StatusFailure
-			c.notifySubscribers(UpdateEvent{
+			event = UpdateEvent{
 				Type:    "failed",
 				Status:  StatusFailure,
 				Error:   fmt.Errorf("swupdate failed: %w", err),
 				Message: fmt.Sprintf("SWUpdate failed: %v", err),
-			})
+			}
 		}
 	} else {
 		// Command succeeded
 		c.status = StatusSuccess
-		c.notifySubscribers(UpdateEvent{
+		event = UpdateEvent{
 			Type:    "completed",
 			Status:  StatusSuccess,
 			Message: "Update completed successfully",
-		})
+		}
 	}
+	c.mu.Unlock()
+	c.notifySubscribers(event)
 }
 
 // SendData is not used in simple implementation (data is sent via file)
@@ -328,9 +327,9 @@ func (c *simpleInstaller) SendData(data []byte) (int, error) {
 // CancelUpdate attempts to cancel the current update
 func (c *simpleInstaller) CancelUpdate() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if !c.IsRunning() {
+		c.mu.Unlock()
 		return nil
 	}
 
@@ -343,11 +342,13 @@ func (c *simpleInstaller) CancelUpdate() error {
 	if c.cmd != nil && c.cmd.Process != nil {
 		if err := c.cmd.Process.Kill(); err != nil {
 			// Process might have already finished
+			c.mu.Unlock()
 			return nil
 		}
 	}
 
 	c.status = StatusIdle
+	c.mu.Unlock()
 	c.notifySubscribers(UpdateEvent{
 		Type:    "status",
 		Status:  StatusIdle,
@@ -395,7 +396,12 @@ func (c *simpleInstaller) Subscribe() (<-chan UpdateEvent, func()) {
 	eventChan := make(chan UpdateEvent, 10)
 
 	c.mu.Lock()
-	c.subscribers = append(c.subscribers, eventChan)
+	select {
+	case <-c.closeChan:
+		close(eventChan)
+	default:
+		c.subscribers = append(c.subscribers, eventChan)
+	}
 	c.mu.Unlock()
 
 	// Return unsubscribe function
@@ -467,7 +473,6 @@ func (c *simpleInstaller) Close() error {
 	}
 
 	close(c.closeChan)
-	<-c.closeDone
 
 	// Close all subscriber channels
 	for _, ch := range c.subscribers {
@@ -475,18 +480,14 @@ func (c *simpleInstaller) Close() error {
 	}
 	c.subscribers = nil
 
-	close(c.closeDone)
 	return nil
 }
 
 // notifySubscribers sends an event to all subscribers
 func (c *simpleInstaller) notifySubscribers(event UpdateEvent) {
 	c.mu.RLock()
-	subscribers := make([]chan UpdateEvent, len(c.subscribers))
-	copy(subscribers, c.subscribers)
-	c.mu.RUnlock()
-
-	for _, ch := range subscribers {
+	defer c.mu.RUnlock()
+	for _, ch := range c.subscribers {
 		select {
 		case ch <- event:
 		default:
