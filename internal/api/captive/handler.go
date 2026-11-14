@@ -77,6 +77,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveStaticFile(w, r, "captive/captive.css")
 	case r.URL.Path == "/static/captive.js":
 		h.serveStaticFile(w, r, "captive/captive.js")
+	case r.URL.Path == "/gen_204" || r.URL.Path == "/generate_204" || r.URL.Path == "/hotspot_detect.html" || r.URL.Path == "/connecttest.txt" || r.URL.Path == "/ncsi.txt":
+		http.Redirect(w, r, "/", http.StatusFound)
 	default:
 		http.NotFound(w, r)
 	}
