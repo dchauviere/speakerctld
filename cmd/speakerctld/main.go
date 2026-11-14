@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/dchauviere/speakerctld/internal/api"
+	"github.com/dchauviere/speakerctld/internal/factoryreset"
 	"github.com/dchauviere/speakerctld/internal/state"
 	"github.com/dchauviere/speakerctld/internal/storage"
 )
@@ -36,6 +37,9 @@ type SpeakerCtld struct {
 	apiServer     *api.Server
 	doneChan      chan struct{}
 	dataDir       string
+	reset         *factoryreset.Manager
+	resetButton   string
+	resetHold     time.Duration
 }
 
 type orchestrator interface {
@@ -46,13 +50,19 @@ type orchestrator interface {
 
 // NewSpeakerCtld creates a new instance of the speaker controller.
 func NewSpeakerCtld(wifiInterface, port, dataDir string) (*SpeakerCtld, error) {
-	// Initialize storage
-	st := storage.DefaultFileStorage()
-
 	// Use provided data directory or default
 	if dataDir == "" {
 		dataDir = DefaultDataDir
 	}
+
+	reset, err := factoryreset.New(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	if err := reset.Recover(); err != nil {
+		return nil, fmt.Errorf("recover factory reset: %w", err)
+	}
+	st := storage.NewFileStorage(dataDir)
 
 	// Generate a device ID from MAC address (for unique AP SSID)
 	deviceID := generateDeviceID()
@@ -76,6 +86,8 @@ func NewSpeakerCtld(wifiInterface, port, dataDir string) (*SpeakerCtld, error) {
 		log.Printf("Warning: failed to initialize API server: %v", err)
 		// Continue without API server
 		apiServer = nil
+	} else {
+		apiServer.SetFactoryReset(reset.Request)
 	}
 
 	return &SpeakerCtld{
@@ -85,6 +97,9 @@ func NewSpeakerCtld(wifiInterface, port, dataDir string) (*SpeakerCtld, error) {
 		apiServer:     apiServer,
 		doneChan:      make(chan struct{}),
 		dataDir:       dataDir,
+		reset:         reset,
+		resetButton:   "/dev/input/event0",
+		resetHold:     10 * time.Second,
 	}, nil
 }
 
@@ -121,17 +136,62 @@ func (s *SpeakerCtld) run(ctx context.Context) error {
 		return fmt.Errorf("sync systemd target for initial state: %w", err)
 	}
 
-	// Start monitoring after the initial setup has completed.
-	go s.monitorStateAndNetwork(ctx)
+	// Stop all writers before erasing persistent data.
+	monitorCtx, cancel := context.WithCancel(ctx)
+	monitorDone := make(chan struct{})
+	go func() {
+		defer close(monitorDone)
+		s.monitorStateAndNetwork(monitorCtx)
+	}()
+	buttonDone := make(chan struct{})
+	go func() {
+		defer close(buttonDone)
+		if s.reset != nil && s.resetButton != "" {
+			factoryreset.WatchButton(monitorCtx, s.resetButton, s.resetHold, s.reset.Request)
+		}
+	}()
 
-	// Wait for shutdown
-	<-ctx.Done()
-	log.Println("Received shutdown signal")
+	var requests <-chan struct{}
+	if s.reset != nil {
+		requests = s.reset.Requests()
+	}
+	resetRequested := false
+	select {
+	case <-ctx.Done():
+		log.Println("Received shutdown signal")
+	case <-requests:
+		resetRequested = true
+	}
+	cancel()
 
 	// Cleanup
+	var stopErr error
 	if s.apiServer != nil {
-		if err := s.apiServer.Stop(); err != nil {
+		if err := s.apiServer.Quiesce(); err != nil {
 			log.Printf("Error stopping API server: %v", err)
+			stopErr = err
+		}
+	}
+	<-monitorDone
+	<-buttonDone
+	if !resetRequested && requests != nil {
+		select {
+		case <-requests:
+			resetRequested = true
+		default:
+		}
+	}
+	if resetRequested && stopErr != nil && s.apiServer != nil {
+		log.Print("Waiting for active requests before factory reset")
+		stopErr = s.apiServer.WaitForRequests()
+	}
+	if s.apiServer != nil && stopErr == nil {
+		if resetRequested {
+			s.apiServer.WaitForFirmwareUpdate()
+		}
+		if err := s.apiServer.Stop(); err != nil {
+			log.Printf("Error closing API server: %v", err)
+			stopErr = err
 		}
 	}
 
@@ -139,8 +199,14 @@ func (s *SpeakerCtld) run(ctx context.Context) error {
 		s.orchestrator.Close()
 	}
 
+	if resetRequested {
+		if stopErr != nil {
+			return fmt.Errorf("cannot reset while API requests are active: %w", stopErr)
+		}
+		return s.reset.Execute()
+	}
 	log.Println("Shutting down...")
-	return nil
+	return stopErr
 }
 
 // monitorStateAndNetwork is the main state monitoring loop.
@@ -375,7 +441,12 @@ func main() {
 	wifiInterface := flag.String("interface", DefaultWifiInterface, "WiFi interface to monitor")
 	port := flag.String("port", DefaultPort, "HTTP port for web server")
 	dataDir := flag.String("data-dir", DefaultDataDir, "Data directory")
+	resetButton := flag.String("factory-reset-input", "/dev/input/event0", "Linux input device for factory reset (empty to disable)")
+	resetHold := flag.Duration("factory-reset-hold", 10*time.Second, "Duration to hold KEY_POWER for factory reset")
 	flag.Parse()
+	if *resetButton != "" && *resetHold <= 0 {
+		log.Fatal("factory-reset-hold must be positive")
+	}
 
 	log.Printf("Starting Speakerctld Speaker Controller with WiFi interface: %s", *wifiInterface)
 	log.Printf("Web server will be available on port: %s", *port)
@@ -386,6 +457,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize application: %v", err)
 	}
+	app.resetButton = *resetButton
+	app.resetHold = *resetHold
 
 	// Start the application
 	app.Start()

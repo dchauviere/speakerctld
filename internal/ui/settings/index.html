@@ -84,6 +84,14 @@
                 <div class="buttons">
                     <button class="btn btn-secondary" type="button" onclick="refreshSettings()">Actualiser</button>
                 </div>
+                <div class="settings-section">
+                    <h3>Réinitialisation usine</h3>
+                    <p class="info-text">Efface toutes les données persistantes, y compris l’identité de l’appareil, puis redémarre l’enceinte. Cette opération est irréversible.</p>
+                    <div class="buttons">
+                        <button class="btn btn-secondary" id="factory-reset-btn" type="button" onclick="factoryReset()">Réinitialiser l’enceinte</button>
+                    </div>
+                    <div id="factory-reset-status" class="status hidden" role="status" aria-live="polite"></div>
+                </div>
             </section>
 
             <section id="firmware" class="tab-content" role="tabpanel" aria-labelledby="tab-firmware" tabindex="0">

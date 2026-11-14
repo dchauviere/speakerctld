@@ -368,8 +368,31 @@ sudo systemctl start speakerctld
 speakerctld \
     -interface wlan0 \
     -port 8080 \
-    -data-dir /data
+    -data-dir /data \
+    -factory-reset-input /dev/input/event0 \
+    -factory-reset-hold 10s
 ```
+
+### Factory reset
+
+The settings page offers a confirmed factory reset. Holding `KEY_POWER` on the
+configured Linux input device for the configured duration triggers the same
+operation; releasing early cancels it. Set `-factory-reset-input ""` to disable
+the button. The daemon requires read access to that device and uses logind's
+`handle-power-key` inhibitor while monitoring it, so short presses do not
+perform logind's normal power-key action. Check the event device assignment on
+the target; event numbers can change.
+
+Reset permanently deletes **all contents** of `-data-dir`, including Wi-Fi
+credentials, device identity and any unrelated data stored there. Nested
+mounts are rejected. The directory itself is retained. A durable marker
+ensures that interrupted resets resume before normal startup; logind reboots
+the device via D-Bus. Errors are logged, and a failed reset is retried on
+service restart. After reboot, the device returns to first-boot provisioning.
+If a firmware update started through the daemon is running, reset waits for it
+to finish before erasing data or requesting a reboot.
+The web endpoint has the same unauthenticated access as the existing settings
+page; restrict access to the management network.
 
 ### Environment Variables
 

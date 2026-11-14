@@ -32,6 +32,11 @@ func NewHandler(stateMachine state.StateMachine, storage storage.Storage) *Handl
 	}
 }
 
+// SetDataDir selects the directory used for device and firmware information.
+func (h *Handler) SetDataDir(dataDir string) {
+	h.dataDir = dataDir
+}
+
 // ServeHTTP implements http.Handler for the settings API
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The captive portal serves settings only after provisioning.

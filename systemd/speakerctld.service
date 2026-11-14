@@ -12,7 +12,9 @@ Environment="DATA_DIR=/data"
 ExecStart=/usr/bin/speakerctld \
     -interface wlan0 \
     -port 80 \
-    -data-dir /data
+    -data-dir /data \
+    -factory-reset-input /dev/input/event0 \
+    -factory-reset-hold 10s
 
 Restart=on-failure
 RestartSec=5s

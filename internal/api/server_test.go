@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,53 @@ import (
 	"github.com/dchauviere/speakerctld/internal/state"
 	"github.com/dchauviere/speakerctld/internal/storage"
 )
+
+func TestFactoryResetEndpoint(t *testing.T) {
+	st := storage.NewFileStorage(t.TempDir())
+	if err := st.SaveSystemState(&storage.SystemState{State: string(state.Online), Provisioned: true}); err != nil {
+		t.Fatal(err)
+	}
+	sm, err := state.NewStateMachine(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	s := &Server{stateMachine: sm, requestReset: func() error { calls++; return nil }}
+	handler := s.createHandler()
+	for _, tc := range []struct {
+		name, method, body, contentType, origin string
+		status, calls                           int
+	}{
+		{"method", "GET", `{"confirm":true}`, "application/json", "", 405, 0},
+		{"content type", "POST", `{"confirm":true}`, "text/plain", "", 403, 0},
+		{"origin", "POST", `{"confirm":true}`, "application/json", "http://evil.example", 403, 0},
+		{"scheme", "POST", `{"confirm":true}`, "application/json", "https://example.com", 403, 0},
+		{"missing confirmation", "POST", `{"confirm":false}`, "application/json", "", 400, 0},
+		{"trailing data", "POST", `{"confirm":true}{}`, "application/json", "", 400, 0},
+		{"confirmed", "POST", `{"confirm":true}`, "application/json", "http://example.com", 202, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, "/api/system/factory-reset", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", tc.contentType)
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != tc.status || calls != tc.calls {
+				t.Fatalf("status=%d calls=%d body=%s", rec.Code, calls, rec.Body.String())
+			}
+		})
+	}
+	s.requestReset = func() error { return errors.New("disk error") }
+	req := httptest.NewRequest("POST", "/api/system/factory-reset", strings.NewReader(`{"confirm":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("reset failure returned %d", rec.Code)
+	}
+}
 
 func TestPortalRoutesByProvisioning(t *testing.T) {
 	for _, tc := range []struct {

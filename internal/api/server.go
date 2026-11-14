@@ -1,8 +1,13 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/dchauviere/speakerctld/internal/api/captive"
@@ -29,6 +34,12 @@ type Server struct {
 	wifiInterface     string
 	port              string
 	dataDir           string
+	requestReset      func() error
+}
+
+// SetFactoryReset installs the shared factory reset trigger.
+func (s *Server) SetFactoryReset(request func() error) {
+	s.requestReset = request
 }
 
 // NewServer creates a new API server that manages the web interface
@@ -73,6 +84,9 @@ func NewServer(
 
 	// Create settings handler
 	s.settingsHandler = settings.NewHandler(stateMachine, storage)
+	if dataDir != "" {
+		s.settingsHandler.SetDataDir(dataDir)
+	}
 
 	// Create firmware handler
 	if swupdateInstaller != nil {
@@ -228,6 +242,8 @@ func (s *Server) createHandler() http.Handler {
 		}
 	})
 
+	mux.HandleFunc("/api/system/factory-reset", s.handleFactoryReset)
+
 	mux.HandleFunc("/api/system/info", func(w http.ResponseWriter, r *http.Request) {
 		currentState := s.stateMachine.CurrentState()
 		if currentState == state.Online || (currentState == state.FirstBootAP && s.stateMachine.IsProvisioned()) {
@@ -258,13 +274,90 @@ func (s *Server) createHandler() http.Handler {
 	return mux
 }
 
+func (s *Server) handleFactoryReset(w http.ResponseWriter, r *http.Request) {
+	currentState := s.stateMachine.CurrentState()
+	if currentState != state.Online && (currentState != state.FirstBootAP || !s.stateMachine.IsProvisioned()) {
+		http.Error(w, "Not available in current state", http.StatusForbidden)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Header.Get("Content-Type") != "application/json" || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+		http.Error(w, "Invalid request", http.StatusForbidden)
+		return
+	}
+	if origin := r.Header.Get("Origin"); origin != "" {
+		u, err := url.Parse(origin)
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		if err != nil || u.Scheme != scheme || !strings.EqualFold(u.Host, r.Host) || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+			http.Error(w, "Invalid origin", http.StatusForbidden)
+			return
+		}
+	}
+	var body struct {
+		Confirm bool `json:"confirm"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil || !body.Confirm || decoder.Decode(&struct{}{}) != io.EOF {
+		http.Error(w, "Confirmation required", http.StatusBadRequest)
+		return
+	}
+	if s.requestReset == nil {
+		http.Error(w, "Factory reset unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if err := s.requestReset(); err != nil {
+		log.Printf("Factory reset request failed: %v", err)
+		http.Error(w, "Factory reset request failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	if err := json.NewEncoder(w).Encode(map[string]bool{"accepted": true}); err != nil {
+		log.Printf("Error writing factory reset response: %v", err)
+	}
+}
+
+// Quiesce stops accepting requests and waits for active handlers.
+func (s *Server) Quiesce() error {
+	if s.server != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := s.server.Shutdown(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// WaitForRequests waits without a deadline once a reset has been accepted.
+func (s *Server) WaitForRequests() error {
+	if s.server != nil {
+		return s.server.Shutdown(context.Background())
+	}
+	return nil
+}
+
+// WaitForFirmwareUpdate prevents a reset from interrupting an active update.
+func (s *Server) WaitForFirmwareUpdate() {
+	if s.swupdateInstaller != nil && s.swupdateInstaller.IsRunning() {
+		log.Print("Waiting for firmware update before factory reset")
+		for s.swupdateInstaller.IsRunning() {
+			time.Sleep(time.Second)
+		}
+	}
+}
+
 // Stop stops the web server
 func (s *Server) Stop() error {
-	// Stop web server
-	if s.server != nil {
-		if err := s.server.Close(); err != nil {
-			log.Printf("Error stopping web server: %v", err)
-		}
+	if err := s.Quiesce(); err != nil {
+		return err
 	}
 
 	// Close WebSocket hub

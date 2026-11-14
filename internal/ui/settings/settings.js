@@ -68,6 +68,32 @@ function refreshSettings() {
     loadSettings();
 }
 
+async function factoryReset() {
+    if (!window.confirm('Effacer toutes les données persistantes, y compris l’identité de l’appareil, et redémarrer ? Cette opération est irréversible.')) {
+        return;
+    }
+    const button = document.getElementById('factory-reset-btn');
+    const status = document.getElementById('factory-reset-status');
+    button.disabled = true;
+    status.className = 'status info';
+    status.textContent = 'Demande de réinitialisation en cours...';
+    try {
+        const response = await fetch('/api/system/factory-reset', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({confirm: true})
+        });
+        if (!response.ok) {
+            throw new Error(await response.text());
+        }
+        status.textContent = 'Réinitialisation demandée. L’enceinte va redémarrer.';
+    } catch (error) {
+        status.className = 'status error';
+        status.textContent = 'Échec de la demande : ' + error.message;
+        button.disabled = false;
+    }
+}
+
 function loadFirmwareInfo() {
     fetch('/api/firmware/info')
     .then(response => response.json())
