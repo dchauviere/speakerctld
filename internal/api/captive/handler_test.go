@@ -8,6 +8,7 @@ import (
 
 	"github.com/dchauviere/speakerctld/internal/state"
 	"github.com/dchauviere/speakerctld/internal/storage"
+	"github.com/dchauviere/speakerctld/internal/ui"
 )
 
 type provisioningState struct {
@@ -31,5 +32,33 @@ func TestWifiProvisioningLeavesTransitionToMonitor(t *testing.T) {
 	config, err := st.LoadWifiConfig()
 	if err != nil || config == nil || config.SSID != "home" || config.PSK != "password" {
 		t.Fatalf("stored Wi-Fi config = %v, error = %v", config, err)
+	}
+}
+
+func TestStaticAssetsHaveBrowserContentTypes(t *testing.T) {
+	handler := &Handler{
+		stateMachine: &provisioningState{},
+		assets:       ui.CaptiveAssets(),
+	}
+
+	for _, test := range []struct {
+		path        string
+		contentType string
+	}{
+		{path: "/static/captive.css", contentType: "text/css; charset=utf-8"},
+		{path: "/static/captive.js", contentType: "application/javascript; charset=utf-8"},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, test.path, nil)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+			}
+			if got := response.Header().Get("Content-Type"); got != test.contentType {
+				t.Fatalf("Content-Type = %q, want %q", got, test.contentType)
+			}
+		})
 	}
 }

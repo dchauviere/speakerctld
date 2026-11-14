@@ -1,21 +1,55 @@
 function switchTab(event, tabName) {
+    const tabButtons = document.querySelectorAll('.nav-tab');
     document.querySelectorAll('.tab-content').forEach(tab => {
         tab.classList.remove('active');
     });
-    document.querySelectorAll('.nav-tab').forEach(tab => {
+    tabButtons.forEach(tab => {
         tab.classList.remove('active');
+        tab.setAttribute('aria-selected', 'false');
+        tab.setAttribute('tabindex', '-1');
     });
     
-    document.getElementById(tabName).classList.add('active');
-    event.currentTarget.classList.add('active');
+    const panel = document.getElementById(tabName);
+    const selectedTab = event.currentTarget;
+    panel.classList.add('active');
+    selectedTab.classList.add('active');
+    selectedTab.setAttribute('aria-selected', 'true');
+    selectedTab.setAttribute('tabindex', '0');
     
-    if (tabName === 'settings') {
+    if (tabName === 'info') {
+        loadSystemInfo();
+    } else if (tabName === 'settings') {
         loadSettings();
     } else if (tabName === 'firmware') {
         loadFirmwareInfo();
-    } else if (tabName === 'info') {
-        loadSystemInfo();
     }
+}
+
+function navigateTabs(event) {
+    const tabs = Array.from(document.querySelectorAll('.nav-tab'));
+    const currentIndex = tabs.indexOf(document.activeElement);
+    let nextIndex;
+
+    switch (event.key) {
+        case 'ArrowRight':
+            nextIndex = (currentIndex + 1) % tabs.length;
+            break;
+        case 'ArrowLeft':
+            nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+            break;
+        case 'Home':
+            nextIndex = 0;
+            break;
+        case 'End':
+            nextIndex = tabs.length - 1;
+            break;
+        default:
+            return;
+    }
+
+    event.preventDefault();
+    tabs[nextIndex].focus();
+    tabs[nextIndex].click();
 }
 
 function loadSettings() {
@@ -103,6 +137,5 @@ function showStatus(message, type) {
 
 // Initialize - load data on page load
 document.addEventListener('DOMContentLoaded', function() {
-    loadSettings();
     loadSystemInfo();
 });

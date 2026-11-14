@@ -102,10 +102,10 @@ func (h *Handler) serveStaticFile(w http.ResponseWriter, r *http.Request, path s
 	}
 
 	// Set appropriate content type based on file extension
-	switch {
-	case path[len(path)-3:] == ".css":
+	switch filepath.Ext(path) {
+	case ".css":
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	case path[len(path)-2:] == ".js":
+	case ".js":
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	default:
 		w.Header().Set("Content-Type", "application/octet-stream")
@@ -138,7 +138,7 @@ func (h *Handler) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 
 	// Prepare response
 	settings := ui.SettingsData{
-		DeviceName: deviceInfo.DeviceID,
+		DeviceName:  deviceInfo.DeviceID,
 		CurrentSSID: "",
 	}
 
@@ -191,12 +191,12 @@ func (h *Handler) handleFirmwareCheck(w http.ResponseWriter, r *http.Request) {
 
 	// Placeholder - always return no update available
 	w.Header().Set("Content-Type", "application/json")
-	
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"updateAvailable": false,
-		"currentVersion": "1.0.0",
-		"latestVersion":  "1.0.0",
-		"message":        "No firmware update available",
+		"currentVersion":  "1.0.0",
+		"latestVersion":   "1.0.0",
+		"message":         "No firmware update available",
 	})
 }
 

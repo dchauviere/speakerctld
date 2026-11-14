@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"path/filepath"
 
 	"github.com/dchauviere/speakerctld/internal/network"
 	"github.com/dchauviere/speakerctld/internal/state"
@@ -111,10 +112,10 @@ func (h *Handler) serveStaticFile(w http.ResponseWriter, r *http.Request, path s
 	}
 
 	// Set appropriate content type based on file extension
-	switch {
-	case path[len(path)-3:] == ".css":
+	switch filepath.Ext(path) {
+	case ".css":
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	case path[len(path)-2:] == ".js":
+	case ".js":
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	default:
 		w.Header().Set("Content-Type", "application/octet-stream")
