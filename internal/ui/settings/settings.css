@@ -340,6 +340,91 @@ input {
     display: none;
 }
 
+/* Progress bar styles */
+.firmware-progress {
+    margin-top: 18px;
+    padding-top: 18px;
+    border-top: 1px solid #edf1f6;
+}
+
+.firmware-progress label {
+    display: block;
+    margin-bottom: 8px;
+    color: #3a4b64;
+    font-size: 13px;
+    font-weight: 650;
+}
+
+.progress-container {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+progress {
+    flex: 1;
+    height: 24px;
+    border-radius: 12px;
+    overflow: hidden;
+    -webkit-appearance: none;
+    appearance: none;
+}
+
+progress::-webkit-progress-bar {
+    background-color: #e8edf4;
+    border-radius: 12px;
+}
+
+progress::-webkit-progress-value {
+    background: linear-gradient(90deg, var(--accent), var(--accent-dark));
+    border-radius: 12px;
+    transition: width 0.3s ease;
+}
+
+progress::-moz-progress-bar {
+    background: linear-gradient(90deg, var(--accent), var(--accent-dark));
+    border-radius: 12px;
+    transition: width 0.3s ease;
+}
+
+#firmware-progress-percent {
+    min-width: 40px;
+    color: #243650;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+#firmware-progress-text {
+    color: var(--muted);
+    font-size: 13px;
+}
+
+/* Info list styles */
+.info-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.info-list li {
+    padding: 8px 0;
+    padding-left: 24px;
+    color: #41516a;
+    font-size: 14px;
+    line-height: 1.5;
+    position: relative;
+}
+
+.info-list li::before {
+    content: "•";
+    position: absolute;
+    left: 0;
+    color: var(--accent);
+    font-size: 16px;
+    line-height: 1;
+}
+
 @media (max-width: 640px) {
     body {
         padding: 16px 12px;
@@ -370,6 +455,23 @@ input {
     .card,
     .settings-section {
         padding: 19px;
+    }
+
+    .buttons {
+        flex-direction: column;
+    }
+
+    .buttons .btn {
+        width: 100%;
+    }
+
+    .progress-container {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    progress {
+        width: 100%;
     }
 }
 

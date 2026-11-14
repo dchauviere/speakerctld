@@ -253,21 +253,36 @@ func (s *Server) createHandler() http.Handler {
 		}
 	})
 
+	// Legacy routes for backward compatibility - route to firmware handler if available, else to settings handler
 	mux.HandleFunc("/api/firmware/info", func(w http.ResponseWriter, r *http.Request) {
 		currentState := s.stateMachine.CurrentState()
-		if currentState == state.Online || (currentState == state.FirstBootAP && s.stateMachine.IsProvisioned()) {
-			s.settingsHandler.ServeHTTP(w, r)
-		} else {
+		if currentState != state.Online && (currentState != state.FirstBootAP || !s.stateMachine.IsProvisioned()) {
 			http.Error(w, "Not available in current state", http.StatusForbidden)
+			return
+		}
+		if s.firmwareHandler != nil {
+			// Create a new request with the stripped path
+			newReq := r.Clone(r.Context())
+			newReq.URL.Path = "/info"
+			s.firmwareHandler.ServeHTTP(w, newReq)
+		} else {
+			s.settingsHandler.ServeHTTP(w, r)
 		}
 	})
 
 	mux.HandleFunc("/api/firmware/check", func(w http.ResponseWriter, r *http.Request) {
 		currentState := s.stateMachine.CurrentState()
-		if currentState == state.Online || (currentState == state.FirstBootAP && s.stateMachine.IsProvisioned()) {
-			s.settingsHandler.ServeHTTP(w, r)
-		} else {
+		if currentState != state.Online && (currentState != state.FirstBootAP || !s.stateMachine.IsProvisioned()) {
 			http.Error(w, "Not available in current state", http.StatusForbidden)
+			return
+		}
+		if s.firmwareHandler != nil {
+			// Create a new request with the stripped path
+			newReq := r.Clone(r.Context())
+			newReq.URL.Path = "/check"
+			s.firmwareHandler.ServeHTTP(w, newReq)
+		} else {
+			s.settingsHandler.ServeHTTP(w, r)
 		}
 	})
 

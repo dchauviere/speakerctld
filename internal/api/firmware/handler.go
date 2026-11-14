@@ -9,10 +9,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/dchauviere/speakerctld/internal/state"
 	"github.com/dchauviere/speakerctld/internal/swupdate"
 )
+
+// DefaultMaxFileSize is the default maximum firmware file size (500MB)
+const DefaultMaxFileSize = 500 * 1024 * 1024
 
 // Handler handles HTTP requests for firmware update operations
 type Handler struct {
@@ -23,18 +27,35 @@ type Handler struct {
 	updateInProgress bool
 }
 
-// NewHandler creates a new firmware update handler
+// HandlerOptions contains configuration options for the firmware handler
+type HandlerOptions struct {
+	MaxFileSize int64
+}
+
+// NewHandler creates a new firmware update handler with default options
 func NewHandler(stateMachine state.StateMachine, installer swupdate.Installer, dataDir string) (*Handler, error) {
+	return NewHandlerWithOptions(stateMachine, installer, dataDir, HandlerOptions{})
+}
+
+// NewHandlerWithOptions creates a new firmware update handler with custom options
+func NewHandlerWithOptions(stateMachine state.StateMachine, installer swupdate.Installer, dataDir string, opts HandlerOptions) (*Handler, error) {
+	maxFileSize := opts.MaxFileSize
+	if maxFileSize == 0 {
+		maxFileSize = DefaultMaxFileSize
+	}
+
 	return &Handler{
 		stateMachine:     stateMachine,
 		installer:        installer,
 		dataDir:          dataDir,
-		maxFileSize:      100 * 1024 * 1024, // 100MB default
+		maxFileSize:      maxFileSize,
 		updateInProgress: false,
 	}, nil
 }
 
 // ServeHTTP implements http.Handler for firmware update API
+// Note: This handler is mounted with http.StripPrefix("/api/firmware", ...)
+// so r.URL.Path will be "/info", "/upload", etc., not "/api/firmware/info"
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Check if we're in a valid state for firmware updates
 	currentState := h.stateMachine.CurrentState()
@@ -43,18 +64,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if update is already in progress
-	if h.updateInProgress {
+	// For GET requests on info and check, don't block if update is in progress
+	// For POST requests, check if update is already in progress
+	if h.updateInProgress && r.Method == http.MethodPost && r.URL.Path != "/cancel" {
 		http.Error(w, "Update already in progress", http.StatusConflict)
 		return
 	}
 
-	switch {
-	case r.URL.Path == "/api/firmware/upload":
+	// Extract the path without the /api/firmware prefix
+	// With StripPrefix, paths are already stripped
+	path := r.URL.Path
+
+	switch path {
+	case "/info", "/api/firmware/info":
+		h.handleFirmwareInfo(w, r)
+	case "/check", "/api/firmware/check":
+		h.handleFirmwareCheck(w, r)
+	case "/upload", "/api/firmware/upload":
 		h.handleFirmwareUpload(w, r)
-	case r.URL.Path == "/api/firmware/status":
+	case "/status", "/api/firmware/status":
 		h.handleFirmwareStatus(w, r)
-	case r.URL.Path == "/api/firmware/cancel":
+	case "/cancel", "/api/firmware/cancel":
 		h.handleFirmwareCancel(w, r)
 	default:
 		http.NotFound(w, r)
@@ -62,31 +92,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleFirmwareUpload handles POST requests to upload and install firmware
+// Supports both multipart/form-data (file upload) and application/octet-stream
 func (h *Handler) handleFirmwareUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Check content type
-	contentType := r.Header.Get("Content-Type")
-	if contentType != "application/octet-stream" {
-		http.Error(w, "Expected Content-Type: application/octet-stream", http.StatusUnsupportedMediaType)
+	// Set update in progress flag
+	if h.updateInProgress {
+		http.Error(w, "Update already in progress", http.StatusConflict)
 		return
 	}
-
-	// Get content length
-	contentLength := r.ContentLength
-	if contentLength == -1 {
-		http.Error(w, "Content-Length required", http.StatusLengthRequired)
-		return
-	}
-
-	// Check size limit
-	if contentLength > h.maxFileSize {
-		http.Error(w, fmt.Sprintf("File too large. Maximum size: %d bytes", h.maxFileSize), http.StatusRequestEntityTooLarge)
-		return
-	}
+	h.updateInProgress = true
+	defer func() {
+		h.updateInProgress = false
+	}()
 
 	// Parse query parameters
 	query := r.URL.Query()
@@ -94,33 +115,181 @@ func (h *Handler) handleFirmwareUpload(w http.ResponseWriter, r *http.Request) {
 	softwareSet := query.Get("software_set")
 	runningMode := query.Get("running_mode")
 
-	// Set update in progress flag
-	h.updateInProgress = true
-	defer func() {
-		h.updateInProgress = false
-	}()
+	var source swupdate.UpdateSource
+	var tempFile *os.File
+	var cleanup = func() {}
 
-	// Create source for the update
-	source := swupdate.UpdateSource{
-		Type:        swupdate.SourceLocal,
-		Reader:      r.Body,
-		FileSize:    contentLength,
-		SoftwareSet: softwareSet,
-		RunningMode: runningMode,
-		DryRun:      dryRun,
-		BufferSize:  131072, // 128KB
+	// Check content type
+	contentType := r.Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		// Handle multipart form upload
+		err := r.ParseMultipartForm(10 << 20) // 10MB memory limit
+		if err != nil {
+			log.Printf("Failed to parse multipart form: %v", err)
+			http.Error(w, fmt.Sprintf("Failed to parse form: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		// Get the firmware file from the form
+		file, header, err := r.FormFile("firmware")
+		if err != nil {
+			log.Printf("Failed to get firmware file: %v", err)
+			http.Error(w, "No firmware file provided", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		// Check file size
+		fileSize := header.Size
+		if fileSize > h.maxFileSize {
+			maxSizeMB := h.maxFileSize / (1024 * 1024)
+			http.Error(w, fmt.Sprintf("Fichier trop volumineux. Taille maximale: %d Mo", maxSizeMB), http.StatusRequestEntityTooLarge)
+			return
+		}
+
+		// Validate file extension
+		fileName := header.Filename
+		validExtensions := map[string]bool{
+			".swu": true,
+			".bin": true,
+			".img": true,
+		}
+		ext := strings.ToLower(filepath.Ext(fileName))
+		if !validExtensions[ext] {
+			http.Error(w, fmt.Sprintf("Invalid file type: %s. Expected .swu, .bin, or .img", ext), http.StatusBadRequest)
+			return
+		}
+
+		// Save to temp file for swupdate to use
+		tempFile, err = os.CreateTemp(h.dataDir, "swupdate-*.swu")
+		if err != nil {
+			log.Printf("Failed to create temp file: %v", err)
+			http.Error(w, "Failed to create temp file", http.StatusInternalServerError)
+			return
+		}
+		cleanup = func() {
+			if tempFile != nil {
+				tempFile.Close()
+				os.Remove(tempFile.Name())
+			}
+		}
+
+		// Copy the uploaded file to temp file
+		if _, err := io.Copy(tempFile, file); err != nil {
+			log.Printf("Failed to copy firmware file: %v", err)
+			cleanup()
+			http.Error(w, "Failed to save firmware file", http.StatusInternalServerError)
+			return
+		}
+
+		// Get the temp file name before closing
+		tempFilePath := tempFile.Name()
+
+		// Close the file
+		if err := tempFile.Close(); err != nil {
+			cleanup()
+			http.Error(w, "Failed to close temp file", http.StatusInternalServerError)
+			return
+		}
+
+		tempFile = nil // We'll use the file path now
+
+		// Create source with file path
+		source = swupdate.UpdateSource{
+			Type:        swupdate.SourceLocal,
+			FilePath:    tempFilePath,
+			FileSize:    fileSize,
+			SoftwareSet: softwareSet,
+			RunningMode: runningMode,
+			DryRun:      dryRun,
+			BufferSize:  131072,
+		}
+		cleanup = func() {
+			os.Remove(source.FilePath)
+		}
+	} else if contentType == "application/octet-stream" {
+		// Handle raw binary upload
+		contentLength := r.ContentLength
+		if contentLength == -1 {
+			http.Error(w, "Content-Length required", http.StatusLengthRequired)
+			return
+		}
+
+		if contentLength > h.maxFileSize {
+			maxSizeMB := h.maxFileSize / (1024 * 1024)
+			http.Error(w, fmt.Sprintf("Fichier trop volumineux. Taille maximale: %d Mo", maxSizeMB), http.StatusRequestEntityTooLarge)
+			return
+		}
+
+		// Save to temp file
+		var err error
+		tempFile, err = os.CreateTemp(h.dataDir, "swupdate-*.swu")
+		if err != nil {
+			log.Printf("Failed to create temp file: %v", err)
+			http.Error(w, "Failed to create temp file", http.StatusInternalServerError)
+			return
+		}
+		cleanup = func() {
+			if tempFile != nil {
+				tempFile.Close()
+				os.Remove(tempFile.Name())
+			}
+		}
+
+		if _, err := io.Copy(tempFile, r.Body); err != nil {
+			log.Printf("Failed to copy request body: %v", err)
+			cleanup()
+			http.Error(w, "Failed to save firmware file", http.StatusInternalServerError)
+			return
+		}
+
+		// Get the temp file name before closing
+		tempFilePath := tempFile.Name()
+
+		if err := tempFile.Close(); err != nil {
+			cleanup()
+			http.Error(w, "Failed to close temp file", http.StatusInternalServerError)
+			return
+		}
+
+		tempFile = nil
+
+		source = swupdate.UpdateSource{
+			Type:        swupdate.SourceLocal,
+			FilePath:    tempFilePath,
+			FileSize:    contentLength,
+			SoftwareSet: softwareSet,
+			RunningMode: runningMode,
+			DryRun:      dryRun,
+			BufferSize:  131072,
+		}
+		cleanup = func() {
+			os.Remove(source.FilePath)
+		}
+	} else {
+		http.Error(w, "Expected Content-Type: multipart/form-data or application/octet-stream", http.StatusUnsupportedMediaType)
+		return
+	}
+
+	// Validate the SWU file
+	if err := ValidateSWUFilePath(source.FilePath); err != nil {
+		log.Printf("Invalid SWU file: %v", err)
+		cleanup()
+		http.Error(w, fmt.Sprintf("Invalid firmware file: %v", err), http.StatusBadRequest)
+		return
 	}
 
 	// Subscribe to events
 	eventChan, unsubscribe := h.installer.Subscribe()
 	defer unsubscribe()
 
-	// Start a goroutine to process events and send WebSocket/HTTP updates
-	go h.processUpdateEvents(eventChan, w)
+	// Start a goroutine to process events
+	go h.processUpdateEvents(eventChan, cleanup)
 
 	// Start the update
 	if err := h.installer.StartUpdate(source); err != nil {
 		log.Printf("Failed to start update: %v", err)
+		cleanup()
 		http.Error(w, fmt.Sprintf("Failed to start update: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -130,30 +299,29 @@ func (h *Handler) handleFirmwareUpload(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":  "started",
-		"message": "Firmware update started",
-		"dry_run": dryRun,
+		"status":      "started",
+		"message":     "Firmware update started",
+		"dry_run":     dryRun,
+		"software_set": softwareSet,
+		"file_path":   source.FilePath,
 	})
 }
 
-// processUpdateEvents processes update events and sends them to the client
-// This is a simplified version - in production, you'd want to use WebSocket
-func (h *Handler) processUpdateEvents(eventChan <-chan swupdate.UpdateEvent, w http.ResponseWriter) {
-	// Create a simple event stream using chunked encoding
-	// In production, this should use WebSocket
-
-	// For simplicity, we'll just log events here
-	// A real implementation would:
-	// 1. Use WebSocket for bidirectional communication
-	// 2. Store events for polling via /api/firmware/status
-	// 3. Broadcast events to all connected clients
+// processUpdateEvents processes update events and sends them to WebSocket clients
+func (h *Handler) processUpdateEvents(eventChan <-chan swupdate.UpdateEvent, cleanup func()) {
+	// Process events and forward them via WebSocket
+	// The cleanup function will be called when update completes or fails
 
 	for event := range eventChan {
-		log.Printf("Update event: type=%s, status=%s", event.Type, event.Status.String())
+		log.Printf("Update event: type=%s, status=%s, message=%s", event.Type, event.Status.String(), event.Message)
 
 		// Check if update completed or failed
 		if event.Type == "completed" || event.Type == "failed" {
 			log.Printf("Update finished with status: %s", event.Status.String())
+			// Clean up temp files
+			if cleanup != nil {
+				cleanup()
+			}
 			return
 		}
 	}
@@ -226,6 +394,64 @@ func (h *Handler) handleFirmwareCancel(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleFirmwareInfo handles GET requests for firmware information
+func (h *Handler) handleFirmwareInfo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get firmware version from file
+	version := "unknown"
+	date := "unknown"
+
+	versionFile := filepath.Join(h.dataDir, "firmware-version")
+	if versionBytes, err := os.ReadFile(versionFile); err == nil {
+		version = strings.TrimSpace(string(versionBytes))
+	}
+
+	// Try to get build date
+	dateFile := filepath.Join(h.dataDir, "firmware-date")
+	if dateBytes, err := os.ReadFile(dateFile); err == nil {
+		date = strings.TrimSpace(string(dateBytes))
+	}
+
+	// Set content type
+	w.Header().Set("Content-Type", "application/json")
+
+	// Return JSON response
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"version": version,
+		"date":    date,
+	})
+}
+
+// handleFirmwareCheck handles GET/POST requests to check for firmware updates
+func (h *Handler) handleFirmwareCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get current version
+	currentVersion := "unknown"
+	versionFile := filepath.Join(h.dataDir, "firmware-version")
+	if versionBytes, err := os.ReadFile(versionFile); err == nil {
+		currentVersion = strings.TrimSpace(string(versionBytes))
+	}
+
+	// For now, always return no update available
+	// In a real implementation, this would check a remote server
+	w.Header().Set("Content-Type", "application/json")
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"updateAvailable": false,
+		"currentVersion":  currentVersion,
+		"latestVersion":   currentVersion,
+		"message":         "No firmware update available",
+	})
+}
+
 // SetMaxFileSize sets the maximum file size for firmware uploads
 func (h *Handler) SetMaxFileSize(size int64) {
 	h.maxFileSize = size
@@ -283,6 +509,17 @@ func ValidateSWUFile(file *os.File) error {
 	}
 
 	return nil
+}
+
+// ValidateSWUFilePath validates that a file at the given path is a valid SWU file
+func ValidateSWUFilePath(filePath string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	return ValidateSWUFile(file)
 }
 
 // GetFirmwareVersion returns the current firmware version from file

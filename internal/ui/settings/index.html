@@ -24,7 +24,7 @@
                 <div class="section-heading">
                     <p class="eyebrow">VOTRE APPAREIL</p>
                     <h2>Informations générales</h2>
-                    <p class="info-text">Un aperçu de l’état de votre enceinte et de sa connexion réseau.</p>
+                    <p class="info-text">Un aperçu de l'état de votre enceinte et de sa connexion réseau.</p>
                 </div>
 
                 <div class="card-grid">
@@ -71,8 +71,8 @@
                 <div class="settings-section">
                     <h3>Paramètres réseau</h3>
                     <div class="form-group">
-                        <label for="device-name">Nom de l’appareil</label>
-                        <input type="text" id="device-name" placeholder="Nom de l’appareil" readonly>
+                        <label for="device-name">Nom de l'appareil</label>
+                        <input type="text" id="device-name" placeholder="Nom de l'appareil" readonly>
                     </div>
                     <div class="form-group">
                         <label for="current-ssid">Réseau Wi-Fi actuel</label>
@@ -86,9 +86,9 @@
                 </div>
                 <div class="settings-section">
                     <h3>Réinitialisation usine</h3>
-                    <p class="info-text">Efface toutes les données persistantes, y compris l’identité de l’appareil, puis redémarre l’enceinte. Cette opération est irréversible.</p>
+                    <p class="info-text">Efface toutes les données persistantes, y compris l'identité de l'appareil, puis redémarre l'enceinte. Cette opération est irréversible.</p>
                     <div class="buttons">
-                        <button class="btn btn-secondary" id="factory-reset-btn" type="button" onclick="factoryReset()">Réinitialiser l’enceinte</button>
+                        <button class="btn btn-secondary" id="factory-reset-btn" type="button" onclick="factoryReset()">Réinitialiser l'enceinte</button>
                     </div>
                     <div id="factory-reset-status" class="status hidden" role="status" aria-live="polite"></div>
                 </div>
@@ -98,7 +98,7 @@
                 <div class="section-heading">
                     <p class="eyebrow">MAINTENANCE</p>
                     <h2>Firmware Upgrade</h2>
-                    <p class="info-text">Consultez la version du firmware et les options de mise à jour de votre enceinte.</p>
+                    <p class="info-text">Mettez à jour le firmware de votre enceinte pour bénéficier des dernières fonctionnalités et corrections.</p>
                 </div>
 
                 <div class="card">
@@ -114,23 +114,47 @@
                 </div>
 
                 <div class="card">
-                    <h3>Télécharger une mise à jour</h3>
-                    <p class="info-text">Fonctionnalité temporairement désactivée.</p>
+                    <h3>Installer une mise à jour</h3>
+                    <p class="info-text">Sélectionnez un fichier de firmware (.swu, .bin ou .img) pour installer une mise à jour.</p>
+                    
                     <div class="file-upload" id="file-upload">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                             <polyline points="17 8 12 3 7 8"/>
                             <line x1="12" y1="3" x2="12" y2="15"/>
                         </svg>
-                        <p>Glissez-déposez un fichier ou cliquez pour le sélectionner</p>
-                        <input type="file" id="firmware-file" accept=".bin,.img">
+                        <p>Glissez-déposez un fichier .swu, .bin ou .img ici ou cliquez pour le sélectionner</p>
+                        <input type="file" id="firmware-file" accept=".swu,.bin,.img">
                     </div>
+                    
+                    <div id="file-info" class="status info hidden" role="status" aria-live="polite"></div>
+                    
+                    <div class="firmware-progress hidden" id="firmware-progress-container">
+                        <label for="firmware-progress-bar">Progression de la mise à jour</label>
+                        <div class="progress-container">
+                            <progress id="firmware-progress-bar" value="0" max="100"></progress>
+                            <span id="firmware-progress-percent">0%</span>
+                        </div>
+                        <p id="firmware-progress-text">Prêt pour la mise à jour</p>
+                    </div>
+                    
                     <div id="upload-status" class="status hidden"></div>
                 </div>
 
                 <div class="buttons">
-                    <button class="btn" type="button" onclick="updateFirmware()" id="update-btn" disabled>Mettre à jour</button>
-                    <button class="btn btn-secondary" type="button" onclick="checkUpdate()">Vérifier les mises à jour</button>
+                    <button class="btn" type="button" onclick="updateFirmware()" id="update-btn" disabled>Mettre à jour le firmware</button>
+                    <button class="btn btn-secondary" type="button" onclick="checkUpdate()" id="check-update-btn">Vérifier les mises à jour</button>
+                    <button class="btn btn-secondary" type="button" onclick="cancelFirmwareUpdate()" id="cancel-update-btn" disabled>Annuler</button>
+                </div>
+
+                <div class="settings-section">
+                    <h3>Notes importantes</h3>
+                    <ul class="info-list">
+                        <li>Ne pas éteindre l'enceinte pendant la mise à jour</li>
+                        <li>La mise à jour peut prendre plusieurs minutes</li>
+                        <li>L'enceinte redémarrera automatiquement après l'installation</li>
+                        <li>Assurez-vous d'avoir une connexion réseau stable</li>
+                    </ul>
                 </div>
             </section>
         </div>
