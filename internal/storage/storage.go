@@ -2,8 +2,9 @@ package storage
 
 // WifiConfig contains the Wi-Fi network configuration.
 type WifiConfig struct {
-	SSID string `json:"ssid"`
-	PSK  string `json:"psk,omitempty"`
+	SSID   string `json:"ssid"`
+	PSK    string `json:"psk,omitempty"`
+	Hidden bool   `json:"hidden,omitempty"`
 }
 
 // SystemState contains the persistent system state.

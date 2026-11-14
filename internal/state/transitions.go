@@ -44,8 +44,8 @@ func (h *StateTransitionHandler) HandleProvisioning(data *WifiProvisionData) err
 	}
 
 	// Mark device as provisioned
-	if sm, ok := h.stateMachine.(*stateMachine); ok {
-		sm.SetProvisioned()
+	if err := h.stateMachine.SetProvisioned(); err != nil {
+		return err
 	}
 
 	// Transition to WIFI_CONNECT state
@@ -56,8 +56,8 @@ func (h *StateTransitionHandler) HandleProvisioning(data *WifiProvisionData) err
 // HandleWifiConnected handles a successful Wi-Fi connection event.
 func (h *StateTransitionHandler) HandleWifiConnected(event *NetworkEvent) error {
 	// Reset failure count on successful connection
-	if sm, ok := h.stateMachine.(*stateMachine); ok {
-		sm.ResetWifiFailures()
+	if err := h.stateMachine.ResetWifiFailures(); err != nil {
+		return err
 	}
 
 	// Transition to ONLINE state if we're in WIFI_CONNECT
@@ -70,37 +70,15 @@ func (h *StateTransitionHandler) HandleWifiConnected(event *NetworkEvent) error 
 
 // HandleWifiDisconnected handles a Wi-Fi disconnection event.
 func (h *StateTransitionHandler) HandleWifiDisconnected(event *NetworkEvent) error {
-	// Increment failure count
-	if sm, ok := h.stateMachine.(*stateMachine); ok {
-		return sm.IncrementWifiFailures()
-	}
-
-	// If we're in ONLINE state, transition to FALLBACK_AP
-	// (IncrementWifiFailures will handle the transition if threshold is reached)
 	if h.stateMachine.CurrentState() == Online {
-		return h.stateMachine.Transition(FallbackAP)
+		return h.stateMachine.Transition(WifiConnect)
 	}
-
-	return nil
+	return h.stateMachine.IncrementWifiFailures()
 }
 
 // HandleWifiConnectionFailed handles a Wi-Fi connection failure event.
 func (h *StateTransitionHandler) HandleWifiConnectionFailed(event *NetworkEvent) error {
-	// Increment failure count
-	// This will automatically trigger fallback if threshold is reached
-	if sm, ok := h.stateMachine.(*stateMachine); ok {
-		return sm.IncrementWifiFailures()
-	}
-
-	return nil
-}
-
-// HandleFallbackMode handles the manual trigger to enter fallback mode.
-// This could be called from an API endpoint or a button press.
-func (h *StateTransitionHandler) HandleFallbackMode() error {
-	// Force transition to FALLBACK_AP regardless of current state
-	// (as long as it's a valid transition)
-	return h.stateMachine.Transition(FallbackAP)
+	return h.stateMachine.IncrementWifiFailures()
 }
 
 // HandleRetryConnection handles the request to retry Wi-Fi connection.
@@ -108,11 +86,6 @@ func (h *StateTransitionHandler) HandleFallbackMode() error {
 func (h *StateTransitionHandler) HandleRetryConnection() error {
 	// Transition to WIFI_CONNECT to retry connection
 	return h.stateMachine.Transition(WifiConnect)
-}
-
-// CanHandleFallback checks if the system can enter fallback mode.
-func (h *StateTransitionHandler) CanHandleFallback() bool {
-	return h.stateMachine.CanTransitionTo(FallbackAP)
 }
 
 // CanRetryConnection checks if the system can retry Wi-Fi connection.

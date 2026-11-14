@@ -118,6 +118,7 @@ function loadSystemInfo() {
         document.getElementById('system-state').textContent = data.state || 'Inconnu';
         document.getElementById('ip-address').textContent = data.ipAddress || 'Inconnu';
         document.getElementById('network-ssid').textContent = data.ssid || 'Inconnu';
+        document.getElementById('configure-wifi').hidden = data.mode !== 'FIRSTBOOT_AP';
     })
     .catch(error => {
         console.error('Error loading system info:', error);

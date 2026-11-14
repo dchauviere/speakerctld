@@ -17,18 +17,18 @@ import (
 
 // Server manages the web server for both captive portal and settings interfaces
 type Server struct {
-	captiveHandler   *captive.Handler
-	settingsHandler  *settings.Handler
-	firmwareHandler  *firmware.Handler
+	captiveHandler    *captive.Handler
+	settingsHandler   *settings.Handler
+	firmwareHandler   *firmware.Handler
 	server            *http.Server
 	wsHub             *websocket.Hub
-	stateMachine     state.StateMachine
-	storage          storage.Storage
-	systemdManager   *systemd.SystemdManager
+	stateMachine      state.StateMachine
+	storage           storage.Storage
+	systemdManager    *systemd.SystemdManager
 	swupdateInstaller swupdate.Installer
-	wifiInterface    string
-	port             string
-	dataDir          string
+	wifiInterface     string
+	port              string
+	dataDir           string
 }
 
 // NewServer creates a new API server that manages the web interface
@@ -40,7 +40,7 @@ func NewServer(
 	port string,
 	dataDir string,
 ) (*Server, error) {
-	
+
 	s := &Server{
 		stateMachine:   stateMachine,
 		storage:        storage,
@@ -103,7 +103,7 @@ func (s *Server) Start() error {
 		Addr:              ":" + s.port,
 		Handler:           mux,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
+		WriteTimeout:      25 * time.Second,
 		IdleTimeout:       30 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -122,17 +122,19 @@ func (s *Server) Start() error {
 // createHandler creates the main HTTP handler with dynamic routing based on state
 func (s *Server) createHandler() http.Handler {
 	mux := http.NewServeMux()
-	
+
 	// Main route handler - dynamically routes based on current state
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		currentState := s.stateMachine.CurrentState()
-		
+
 		switch currentState {
 		case state.FirstBootAP:
-			// In first boot mode, serve captive portal
-			s.captiveHandler.ServeHTTP(w, r)
-		case state.Online, state.FallbackAP:
-			// In online or fallback mode, serve settings interface
+			if s.stateMachine.IsProvisioned() {
+				s.settingsHandler.ServeHTTP(w, r)
+			} else {
+				s.captiveHandler.ServeHTTP(w, r)
+			}
+		case state.Online:
 			s.settingsHandler.ServeHTTP(w, r)
 		case state.WifiConnect:
 			// In connecting state, show a connecting page or redirect
@@ -144,17 +146,25 @@ func (s *Server) createHandler() http.Handler {
 			w.Write([]byte("Service unavailable - unknown state: " + string(currentState)))
 		}
 	})
-	
+
+	mux.HandleFunc("/wifi", func(w http.ResponseWriter, r *http.Request) {
+		if s.stateMachine.CurrentState() == state.FirstBootAP && s.stateMachine.IsProvisioned() {
+			s.captiveHandler.ServeHTTP(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+
 	// Add firmware endpoints if available (accessible in all states)
 	if s.firmwareHandler != nil {
 		mux.Handle("/api/firmware/", http.StripPrefix("/api/firmware", s.firmwareHandler))
 	}
-	
+
 	// Add WebSocket endpoint if hub is available
 	if s.wsHub != nil {
 		mux.Handle("/ws", websocket.NewWebSocketHandler(s.wsHub))
 	}
-	
+
 	// Static files for captive portal (accessible in FIRSTBOOT_AP state)
 	mux.HandleFunc("/static/captive.css", func(w http.ResponseWriter, r *http.Request) {
 		if s.stateMachine.CurrentState() == state.FirstBootAP {
@@ -163,7 +173,7 @@ func (s *Server) createHandler() http.Handler {
 			http.NotFound(w, r)
 		}
 	})
-	
+
 	mux.HandleFunc("/static/captive.js", func(w http.ResponseWriter, r *http.Request) {
 		if s.stateMachine.CurrentState() == state.FirstBootAP {
 			s.captiveHandler.ServeHTTP(w, r)
@@ -171,26 +181,26 @@ func (s *Server) createHandler() http.Handler {
 			http.NotFound(w, r)
 		}
 	})
-	
-	// Static files for settings (accessible in ONLINE or FALLBACK_AP state)
+
+	// Static files for settings
 	mux.HandleFunc("/static/settings.css", func(w http.ResponseWriter, r *http.Request) {
 		currentState := s.stateMachine.CurrentState()
-		if currentState == state.Online || currentState == state.FallbackAP {
+		if currentState == state.Online || (currentState == state.FirstBootAP && s.stateMachine.IsProvisioned()) {
 			s.settingsHandler.ServeHTTP(w, r)
 		} else {
 			http.NotFound(w, r)
 		}
 	})
-	
+
 	mux.HandleFunc("/static/settings.js", func(w http.ResponseWriter, r *http.Request) {
 		currentState := s.stateMachine.CurrentState()
-		if currentState == state.Online || currentState == state.FallbackAP {
+		if currentState == state.Online || (currentState == state.FirstBootAP && s.stateMachine.IsProvisioned()) {
 			s.settingsHandler.ServeHTTP(w, r)
 		} else {
 			http.NotFound(w, r)
 		}
 	})
-	
+
 	// API endpoints for captive portal (WiFi scan and connect)
 	mux.HandleFunc("/api/wifi/scan", func(w http.ResponseWriter, r *http.Request) {
 		if s.stateMachine.CurrentState() == state.FirstBootAP {
@@ -199,7 +209,7 @@ func (s *Server) createHandler() http.Handler {
 			http.Error(w, "Not available in current state", http.StatusForbidden)
 		}
 	})
-	
+
 	mux.HandleFunc("/api/wifi", func(w http.ResponseWriter, r *http.Request) {
 		if s.stateMachine.CurrentState() == state.FirstBootAP {
 			s.captiveHandler.ServeHTTP(w, r)
@@ -207,44 +217,44 @@ func (s *Server) createHandler() http.Handler {
 			http.Error(w, "Not available in current state", http.StatusForbidden)
 		}
 	})
-	
+
 	// API endpoints for settings
 	mux.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {
 		currentState := s.stateMachine.CurrentState()
-		if currentState == state.Online || currentState == state.FallbackAP {
+		if currentState == state.Online || (currentState == state.FirstBootAP && s.stateMachine.IsProvisioned()) {
 			s.settingsHandler.ServeHTTP(w, r)
 		} else {
 			http.Error(w, "Not available in current state", http.StatusForbidden)
 		}
 	})
-	
+
 	mux.HandleFunc("/api/system/info", func(w http.ResponseWriter, r *http.Request) {
 		currentState := s.stateMachine.CurrentState()
-		if currentState == state.Online || currentState == state.FallbackAP {
+		if currentState == state.Online || (currentState == state.FirstBootAP && s.stateMachine.IsProvisioned()) {
 			s.settingsHandler.ServeHTTP(w, r)
 		} else {
 			http.Error(w, "Not available in current state", http.StatusForbidden)
 		}
 	})
-	
+
 	mux.HandleFunc("/api/firmware/info", func(w http.ResponseWriter, r *http.Request) {
 		currentState := s.stateMachine.CurrentState()
-		if currentState == state.Online || currentState == state.FallbackAP {
+		if currentState == state.Online || (currentState == state.FirstBootAP && s.stateMachine.IsProvisioned()) {
 			s.settingsHandler.ServeHTTP(w, r)
 		} else {
 			http.Error(w, "Not available in current state", http.StatusForbidden)
 		}
 	})
-	
+
 	mux.HandleFunc("/api/firmware/check", func(w http.ResponseWriter, r *http.Request) {
 		currentState := s.stateMachine.CurrentState()
-		if currentState == state.Online || currentState == state.FallbackAP {
+		if currentState == state.Online || (currentState == state.FirstBootAP && s.stateMachine.IsProvisioned()) {
 			s.settingsHandler.ServeHTTP(w, r)
 		} else {
 			http.Error(w, "Not available in current state", http.StatusForbidden)
 		}
 	})
-	
+
 	return mux
 }
 
@@ -301,13 +311,13 @@ func (s *Server) forwardSWUpdateEvents() {
 
 	for event := range eventChan {
 		var wsEvent websocket.Event
-		
+
 		switch event.Type {
 		case "started":
 			wsEvent = websocket.Event{
 				Type: "firmware_update",
 				Payload: websocket.StatusEvent{
-					Status: "started",
+					Status:  "started",
 					Message: event.Message,
 				},
 			}
@@ -316,16 +326,16 @@ func (s *Server) forwardSWUpdateEvents() {
 				wsEvent = websocket.Event{
 					Type: "firmware_progress",
 					Payload: websocket.ProgressEvent{
-						Status:         event.Status.String(),
+						Status:          event.Status.String(),
 						DownloadPercent: event.Progress.DownloadPercent,
-						DownloadBytes:  event.Progress.DownloadBytes,
-						TotalSteps:     event.Progress.TotalSteps,
-						CurrentStep:    event.Progress.CurrentStep,
-						StepPercent:    event.Progress.StepPercent,
-						CurrentImage:   event.Progress.CurrentImage,
-						HandlerName:    event.Progress.HandlerName,
-						Message:        event.Progress.Message,
-						Source:         "local",
+						DownloadBytes:   event.Progress.DownloadBytes,
+						TotalSteps:      event.Progress.TotalSteps,
+						CurrentStep:     event.Progress.CurrentStep,
+						StepPercent:     event.Progress.StepPercent,
+						CurrentImage:    event.Progress.CurrentImage,
+						HandlerName:     event.Progress.HandlerName,
+						Message:         event.Progress.Message,
+						Source:          "local",
 					},
 				}
 			}

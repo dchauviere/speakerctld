@@ -34,10 +34,10 @@ func NewHandler(stateMachine state.StateMachine, storage storage.Storage) *Handl
 
 // ServeHTTP implements http.Handler for the settings API
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Check if we're in a valid state (ONLINE or FALLBACK_AP)
+	// The captive portal serves settings only after provisioning.
 	currentState := h.stateMachine.CurrentState()
-	if currentState != state.Online && currentState != state.FallbackAP {
-		http.Error(w, "Settings API only available in ONLINE or FALLBACK_AP state", http.StatusForbidden)
+	if currentState != state.Online && (currentState != state.FirstBootAP || !h.stateMachine.IsProvisioned()) {
+		http.Error(w, "Settings API not available in current state", http.StatusForbidden)
 		return
 	}
 

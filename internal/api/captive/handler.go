@@ -1,12 +1,18 @@
 package captive
 
 import (
+	"context"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
 	"net/http"
 	"path/filepath"
+	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/dchauviere/speakerctld/internal/network"
 	"github.com/dchauviere/speakerctld/internal/state"
@@ -20,9 +26,14 @@ type Handler struct {
 	stateMachine   state.StateMachine
 	storage        storage.Storage
 	systemdManager *systemd.SystemdManager
-	networkManager *network.WifiConnectionManager
+	networkManager wifiScanner
 	wifiInterface  string
 	assets         fs.FS
+}
+
+type wifiScanner interface {
+	ScanWifiNetworks(context.Context, string) ([]network.WifiNetwork, error)
+	Close()
 }
 
 // NewHandler creates a new captive portal API handler
@@ -56,7 +67,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch {
-	case r.URL.Path == "/":
+	case r.URL.Path == "/" || r.URL.Path == "/wifi":
 		h.serveCaptivePortal(w, r)
 	case r.URL.Path == "/api/wifi/scan":
 		h.handleWifiScan(w, r)
@@ -134,7 +145,13 @@ func (h *Handler) handleWifiScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	wifiNetworks, err := h.scanWifiNetworks()
+	if h.networkManager == nil {
+		http.Error(w, "Wi-Fi scanner unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	wifiNetworks, err := h.networkManager.ScanWifiNetworks(ctx, h.wifiInterface)
 	if err != nil {
 		log.Printf("Error scanning WiFi networks: %v", err)
 		http.Error(w, "Failed to scan WiFi networks", http.StatusInternalServerError)
@@ -143,35 +160,11 @@ func (h *Handler) handleWifiScan(w http.ResponseWriter, r *http.Request) {
 
 	// Set content type
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 
 	// Return JSON response
 	if err := json.NewEncoder(w).Encode(wifiNetworks); err != nil {
 		log.Printf("Error encoding WiFi networks: %v", err)
-	}
-}
-
-// scanWifiNetworks scans for available WiFi networks
-func (h *Handler) scanWifiNetworks() ([]ui.WifiNetwork, error) {
-	// Try to scan using NetworkManager
-	if h.networkManager != nil {
-		// For now, return placeholder data
-		// TODO: Implement actual WiFi scanning using NetworkManager DBus API
-		return h.getPlaceholderWifiNetworks(), nil
-	}
-
-	// Fallback: use iwlist or other method
-	return h.getPlaceholderWifiNetworks(), nil
-}
-
-// getPlaceholderWifiNetworks returns placeholder WiFi network data
-func (h *Handler) getPlaceholderWifiNetworks() []ui.WifiNetwork {
-	// For demo purposes, return some sample networks
-	return []ui.WifiNetwork{
-		{SSID: "Speakerctld-Setup-ABCD", SignalStrength: 100, SignalPercent: 100},
-		{SSID: "Freebox_WiFi", SignalStrength: 85, SignalPercent: 85},
-		{SSID: "Orange_Livebox", SignalStrength: 70, SignalPercent: 70},
-		{SSID: "SFR_WiFi", SignalStrength: 60, SignalPercent: 60},
-		{SSID: "Bbox_Fibre", SignalStrength: 50, SignalPercent: 50},
 	}
 }
 
@@ -184,8 +177,9 @@ func (h *Handler) handleWifiConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Parse request body
 	var request struct {
-		SSID string `json:"ssid"`
-		PSK  string `json:"psk"`
+		SSID   string `json:"ssid"`
+		PSK    string `json:"psk"`
+		Hidden bool   `json:"hidden"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -194,15 +188,20 @@ func (h *Handler) handleWifiConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate inputs
-	if request.SSID == "" {
-		http.Error(w, "SSID is required", http.StatusBadRequest)
+	if len(request.SSID) == 0 || len(request.SSID) > 32 || !utf8.ValidString(request.SSID) || strings.ContainsRune(request.SSID, 0) {
+		http.Error(w, "SSID must be 1 to 32 bytes", http.StatusBadRequest)
+		return
+	}
+	if err := validatePSK(request.PSK); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	// Store WiFi configuration
 	wifiConfig := &storage.WifiConfig{
-		SSID: request.SSID,
-		PSK:  request.PSK,
+		SSID:   request.SSID,
+		PSK:    request.PSK,
+		Hidden: request.Hidden,
 	}
 
 	if err := h.storage.SaveWifiConfig(wifiConfig); err != nil {
@@ -212,7 +211,11 @@ func (h *Handler) handleWifiConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Mark device as provisioned
-	h.stateMachine.SetProvisioned()
+	if err := h.stateMachine.SetProvisioned(); err != nil {
+		log.Printf("Error saving provisioning state: %v", err)
+		http.Error(w, "Failed to save provisioning state", http.StatusInternalServerError)
+		return
+	}
 
 	// The state monitor stops the AP's DHCP service before activating Wi-Fi.
 	w.Header().Set("Content-Type", "application/json")
@@ -230,4 +233,28 @@ func (h *Handler) Close() {
 	if h.networkManager != nil {
 		h.networkManager.Close()
 	}
+}
+
+func validatePSK(psk string) error {
+	if psk == "" {
+		return nil
+	}
+	if len(psk) >= 8 && len(psk) <= 63 {
+		valid := true
+		for i := 0; i < len(psk); i++ {
+			if psk[i] < 0x20 || psk[i] > 0x7e {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			return nil
+		}
+	}
+	if len(psk) == 64 {
+		if _, err := hex.DecodeString(psk); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("Le mot de passe Wi-Fi doit contenir 8 a 63 caracteres ASCII ou 64 caracteres hexadecimaux")
 }

@@ -16,20 +16,20 @@ import (
 
 // Handler handles HTTP requests for firmware update operations
 type Handler struct {
-	stateMachine state.StateMachine
-	installer    swupdate.Installer
-	dataDir      string
-	maxFileSize  int64
+	stateMachine     state.StateMachine
+	installer        swupdate.Installer
+	dataDir          string
+	maxFileSize      int64
 	updateInProgress bool
 }
 
 // NewHandler creates a new firmware update handler
 func NewHandler(stateMachine state.StateMachine, installer swupdate.Installer, dataDir string) (*Handler, error) {
 	return &Handler{
-		stateMachine:   stateMachine,
-		installer:      installer,
-		dataDir:        dataDir,
-		maxFileSize:    100 * 1024 * 1024, // 100MB default
+		stateMachine:     stateMachine,
+		installer:        installer,
+		dataDir:          dataDir,
+		maxFileSize:      100 * 1024 * 1024, // 100MB default
 		updateInProgress: false,
 	}, nil
 }
@@ -37,10 +37,9 @@ func NewHandler(stateMachine state.StateMachine, installer swupdate.Installer, d
 // ServeHTTP implements http.Handler for firmware update API
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Check if we're in a valid state for firmware updates
-	// Typically, we want to allow updates in ONLINE or FALLBACK_AP state
 	currentState := h.stateMachine.CurrentState()
-	if currentState != state.Online && currentState != state.FallbackAP {
-		http.Error(w, "Firmware update only available in ONLINE or FALLBACK_AP state", http.StatusForbidden)
+	if currentState != state.Online && (currentState != state.FirstBootAP || !h.stateMachine.IsProvisioned()) {
+		http.Error(w, "Firmware update not available in current state", http.StatusForbidden)
 		return
 	}
 
@@ -103,13 +102,13 @@ func (h *Handler) handleFirmwareUpload(w http.ResponseWriter, r *http.Request) {
 
 	// Create source for the update
 	source := swupdate.UpdateSource{
-		Type:         swupdate.SourceLocal,
-		Reader:       r.Body,
-		FileSize:     contentLength,
-		SoftwareSet:  softwareSet,
-		RunningMode:  runningMode,
-		DryRun:       dryRun,
-		BufferSize:   131072, // 128KB
+		Type:        swupdate.SourceLocal,
+		Reader:      r.Body,
+		FileSize:    contentLength,
+		SoftwareSet: softwareSet,
+		RunningMode: runningMode,
+		DryRun:      dryRun,
+		BufferSize:  131072, // 128KB
 	}
 
 	// Subscribe to events
@@ -129,9 +128,9 @@ func (h *Handler) handleFirmwareUpload(w http.ResponseWriter, r *http.Request) {
 	// Return early - the update is running in the background
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status": "started",
+		"status":  "started",
 		"message": "Firmware update started",
 		"dry_run": dryRun,
 	})
@@ -142,16 +141,16 @@ func (h *Handler) handleFirmwareUpload(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) processUpdateEvents(eventChan <-chan swupdate.UpdateEvent, w http.ResponseWriter) {
 	// Create a simple event stream using chunked encoding
 	// In production, this should use WebSocket
-	
+
 	// For simplicity, we'll just log events here
 	// A real implementation would:
 	// 1. Use WebSocket for bidirectional communication
 	// 2. Store events for polling via /api/firmware/status
 	// 3. Broadcast events to all connected clients
-	
+
 	for event := range eventChan {
 		log.Printf("Update event: type=%s, status=%s", event.Type, event.Status.String())
-		
+
 		// Check if update completed or failed
 		if event.Type == "completed" || event.Type == "failed" {
 			log.Printf("Update finished with status: %s", event.Status.String())
@@ -173,9 +172,9 @@ func (h *Handler) handleFirmwareStatus(w http.ResponseWriter, r *http.Request) {
 
 	// Prepare response
 	response := map[string]interface{}{
-		"status":        status.String(),
-		"is_running":    isRunning,
-		"in_progress":   h.updateInProgress,
+		"status":      status.String(),
+		"is_running":  isRunning,
+		"in_progress": h.updateInProgress,
 		"progress": map[string]interface{}{
 			"download_percent": progress.DownloadPercent,
 			"download_bytes":   progress.DownloadBytes,
@@ -207,7 +206,7 @@ func (h *Handler) handleFirmwareCancel(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Failed to cancel update: %v", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
-		
+
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
 			"error":   err.Error(),
@@ -220,7 +219,7 @@ func (h *Handler) handleFirmwareCancel(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"message": "Update cancelled",
@@ -271,18 +270,18 @@ func ValidateSWUFile(file *os.File) error {
 	if err != nil {
 		return err
 	}
-	
+
 	// Reset file position
 	if _, err := file.Seek(0, 0); err != nil {
 		return err
 	}
-	
+
 	// SWU files typically start with a specific magic
 	// This is a simplified check
 	if n != 4 || buf[0] != 0x53 || buf[1] != 0x57 || buf[2] != 0x55 || buf[3] != 0x0A {
 		return fmt.Errorf("invalid SWU file format")
 	}
-	
+
 	return nil
 }
 

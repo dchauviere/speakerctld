@@ -3,9 +3,12 @@ package network
 import (
 	"bufio"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -16,13 +19,17 @@ import (
 )
 
 type testNetworkManager struct {
-	mu          sync.Mutex
-	connections map[dbus.ObjectPath]string
-	failDelete  bool
-	apSettings  map[string]map[string]dbus.Variant
-	apOptions   map[string]dbus.Variant
-	apState     uint32
-	deactivated bool
+	mu               sync.Mutex
+	connections      map[dbus.ObjectPath]string
+	failDelete       bool
+	apSettings       map[string]map[string]dbus.Variant
+	apOptions        map[string]dbus.Variant
+	apState          uint32
+	deactivated      bool
+	lastScan         int64
+	scanError        bool
+	noScanCompletion bool
+	accessPoints     map[dbus.ObjectPath]map[string]dbus.Variant
 }
 
 const testDevicePath = dbus.ObjectPath("/org/freedesktop/NetworkManager/Devices/1")
@@ -37,6 +44,28 @@ func (m *testNetworkManager) GetDeviceByIpIface(iface string) (dbus.ObjectPath, 
 
 func (m *testNetworkManager) GetAllDevices() ([]dbus.ObjectPath, *dbus.Error) {
 	return []dbus.ObjectPath{testDevicePath}, nil
+}
+
+func (m *testNetworkManager) RequestScan(options map[string]dbus.Variant) *dbus.Error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.scanError {
+		return dbus.NewError("org.freedesktop.NetworkManager.Device.NotAllowed", []interface{}{"scan denied"})
+	}
+	if !m.noScanCompletion {
+		m.lastScan++
+	}
+	return nil
+}
+
+func (m *testNetworkManager) GetAllAccessPoints() ([]dbus.ObjectPath, *dbus.Error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	paths := make([]dbus.ObjectPath, 0, len(m.accessPoints))
+	for path := range m.accessPoints {
+		paths = append(paths, path)
+	}
+	return paths, nil
 }
 
 func (m *testNetworkManager) AddAndActivateConnection2(settings map[string]map[string]dbus.Variant, device, specific dbus.ObjectPath, options map[string]dbus.Variant) (dbus.ObjectPath, dbus.ObjectPath, map[string]dbus.Variant, *dbus.Error) {
@@ -67,7 +96,26 @@ func (p *testAPProperties) Get(iface, property string) (dbus.Variant, *dbus.Erro
 		defer p.manager.mu.Unlock()
 		return dbus.MakeVariant(p.manager.apState), nil
 	}
+	if iface == wirelessDeviceInterface && property == "LastScan" {
+		p.manager.mu.Lock()
+		defer p.manager.mu.Unlock()
+		return dbus.MakeVariant(p.manager.lastScan), nil
+	}
 	return dbus.Variant{}, dbus.NewError("org.freedesktop.DBus.Error.UnknownProperty", nil)
+}
+
+type testScannedAP struct {
+	manager *testNetworkManager
+	path    dbus.ObjectPath
+}
+
+func (a *testScannedAP) GetAll(iface string) (map[string]dbus.Variant, *dbus.Error) {
+	a.manager.mu.Lock()
+	defer a.manager.mu.Unlock()
+	if iface != accessPointInterface {
+		return nil, dbus.NewError("org.freedesktop.DBus.Error.UnknownInterface", nil)
+	}
+	return a.manager.accessPoints[a.path], nil
 }
 
 func (m *testNetworkManager) Get(iface, property string) (dbus.Variant, *dbus.Error) {
@@ -161,6 +209,7 @@ func startTestNetworkManager(t *testing.T) (*testNetworkManager, dbus.ObjectPath
 		{manager, dbus.ObjectPath(NMPath), NMInterface},
 		{manager, "/org/freedesktop/NetworkManager/Settings", NMSettingsIface},
 		{&testAPProperties{manager}, testDevicePath, "org.freedesktop.DBus.Properties"},
+		{manager, testDevicePath, wirelessDeviceInterface},
 		{&testAPProperties{manager}, testActivePath, "org.freedesktop.DBus.Properties"},
 		{&testConnection{manager, speakerPath}, speakerPath, NMSettingsIface + ".Connection"},
 		{&testConnection{manager, otherPath}, otherPath, NMSettingsIface + ".Connection"},
@@ -169,7 +218,64 @@ func startTestNetworkManager(t *testing.T) (*testNetworkManager, dbus.ObjectPath
 			t.Fatal(err)
 		}
 	}
+	for i := 1; i <= 6; i++ {
+		path := dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/NetworkManager/AccessPoint/%d", i))
+		if err := conn.Export(&testScannedAP{manager, path}, path, "org.freedesktop.DBus.Properties"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return manager, speakerPath, otherPath
+}
+
+func TestScanWifiNetworks(t *testing.T) {
+	manager, _, _ := startTestNetworkManager(t)
+	makeAP := func(ssid string, strength byte, flags, wpa, rsn uint32) map[string]dbus.Variant {
+		return map[string]dbus.Variant{
+			"Ssid": dbus.MakeVariant([]byte(ssid)), "Strength": dbus.MakeVariant(strength),
+			"Flags": dbus.MakeVariant(flags), "WpaFlags": dbus.MakeVariant(wpa), "RsnFlags": dbus.MakeVariant(rsn), "Mode": dbus.MakeVariant(uint32(2)),
+		}
+	}
+	manager.mu.Lock()
+	manager.lastScan = 10
+	manager.accessPoints = map[dbus.ObjectPath]map[string]dbus.Variant{
+		"/org/freedesktop/NetworkManager/AccessPoint/1": makeAP("home", 40, 1, 0, 0x100),
+		"/org/freedesktop/NetworkManager/AccessPoint/2": makeAP("home", 85, 1, 0, 0x100),
+		"/org/freedesktop/NetworkManager/AccessPoint/3": makeAP("open", 60, 0, 0, 0),
+		"/org/freedesktop/NetworkManager/AccessPoint/4": makeAP("enterprise", 50, 1, 0, 0x200),
+		"/org/freedesktop/NetworkManager/AccessPoint/5": makeAP("", 90, 0, 0, 0),
+		"/org/freedesktop/NetworkManager/AccessPoint/6": makeAP("home", 55, 0, 0, 0),
+	}
+	manager.mu.Unlock()
+	client, err := NewNetworkManagerClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	networks, err := client.ScanWifiNetworks(ctx, "wlan-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []WifiNetwork{{"home", 85, "wpa-psk"}, {"open", 60, "open"}, {"home", 55, "open"}, {"enterprise", 50, "unsupported"}}
+	if !reflect.DeepEqual(networks, want) {
+		t.Fatalf("networks = %+v, want %+v", networks, want)
+	}
+	manager.mu.Lock()
+	manager.scanError = true
+	manager.mu.Unlock()
+	if _, err := client.ScanWifiNetworks(ctx, "wlan-test"); err == nil {
+		t.Fatal("expected scan request error")
+	}
+	manager.mu.Lock()
+	manager.scanError = false
+	manager.noScanCompletion = true
+	manager.mu.Unlock()
+	short, stop := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer stop()
+	if _, err := client.ScanWifiNetworks(short, "wlan-test"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected scan timeout, got %v", err)
+	}
 }
 
 func TestStartAccessPoint(t *testing.T) {
@@ -186,7 +292,7 @@ func TestStartAccessPoint(t *testing.T) {
 		wantErr, rollback       bool
 	}{
 		{"first boot", "", FirstBootAPIP, 2, false, false},
-		{"fallback", "recovery-password", FallbackAPIP, 2, false, false},
+		{"secured", "recovery-password", FirstBootAPIP, 2, false, false},
 		{"activation failed", "", FirstBootAPIP, 4, true, true},
 		{"activation timed out", "", FirstBootAPIP, 1, true, true},
 	} {
@@ -234,13 +340,15 @@ func TestWifiClientUsesVolatileProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	if err := client.AddWifiConnection("home", "test-password"); err != nil {
+	if err := client.AddWifiConnection("wlan-test", "home", "test-password", true); err != nil {
 		t.Fatal(err)
 	}
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	if manager.apOptions["persist"].Value() != "volatile" ||
 		manager.apSettings["802-11-wireless"]["mode"].Value() != "infrastructure" ||
+		manager.apSettings["connection"]["interface-name"].Value() != "wlan-test" ||
+		manager.apSettings["802-11-wireless"]["hidden"].Value() != true ||
 		manager.apSettings["802-11-wireless-security"]["psk"].Value() != "test-password" {
 		t.Fatalf("unexpected client profile: %v, options: %v", manager.apSettings, manager.apOptions)
 	}
@@ -259,12 +367,6 @@ func TestAccessPointAndDNSConfigurationAgree(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(dir, "device"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "device", "recovery-password"), []byte("my-recovery-password"), 0600); err != nil {
-		t.Fatal(err)
-	}
 	g := NewConfigGenerator(storage.NewFileStorage(dir), WithNetworkManagerClient(client), WithWifiInterface("wlan-test"))
 	defer g.Close()
 	g.runtimeDir = t.TempDir()
@@ -274,7 +376,6 @@ func TestAccessPointAndDNSConfigurationAgree(t *testing.T) {
 		ssid, ip, start, end, password string
 	}{
 		{FirstBootAP, "Speakerctld-Setup-ABCD", FirstBootAPIP, FirstBootAPStart, FirstBootAPEnd, ""},
-		{FallbackAP, "Speakerctld-Recovery-ABCD", FallbackAPIP, FallbackAPStart, FallbackAPEnd, "my-recovery-password"},
 	} {
 		t.Run(string(tc.state), func(t *testing.T) {
 			if err := g.GenerateDnsmasqConfig(tc.state); err != nil {

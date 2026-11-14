@@ -75,6 +75,13 @@ body {
     border-radius: 12px;
     cursor: pointer;
     transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+    width: 100%;
+    text-align: left;
+}
+
+.wifi-item:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 
 .wifi-item:hover,
@@ -167,6 +174,22 @@ body {
     outline: none;
     border-color: var(--accent);
     box-shadow: 0 0 0 3px rgba(40, 103, 216, 0.12);
+}
+
+.form-group .show-password {
+    margin-top: 10px;
+    font-weight: normal;
+}
+
+.form-group .show-password input {
+    width: auto;
+    min-height: 0;
+}
+
+.security-note {
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.5;
 }
 
 .btn {

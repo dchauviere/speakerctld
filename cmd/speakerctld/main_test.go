@@ -13,12 +13,55 @@ import (
 	"time"
 
 	"github.com/dchauviere/speakerctld/internal/state"
+	"github.com/dchauviere/speakerctld/internal/storage"
 )
 
 type shutdownOrchestrator struct {
 	state.StateMachine
 	synced chan struct{}
 	closed chan struct{}
+}
+
+type testOrchestrator struct {
+	state.StateMachine
+	transitions []state.State
+}
+
+func (o *testOrchestrator) TransitionTo(target state.State) error {
+	o.transitions = append(o.transitions, target)
+	return o.Transition(target)
+}
+
+func (o *testOrchestrator) Close() {}
+
+func TestPortalWaitsForNewWifiSubmission(t *testing.T) {
+	st := storage.NewFileStorage(t.TempDir())
+	if err := st.SaveSystemState(&storage.SystemState{State: string(state.WifiConnect), Provisioned: true}); err != nil {
+		t.Fatal(err)
+	}
+	sm, err := state.NewStateMachine(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := &testOrchestrator{StateMachine: sm}
+	app := &SpeakerCtld{orchestrator: o, storage: st}
+	for i := 0; i < 3; i++ {
+		app.handleWifiConnectState(true, false)
+	}
+	if o.CurrentState() != state.FirstBootAP {
+		t.Fatalf("expected captive portal, got %s", o.CurrentState())
+	}
+	app.handleFirstBootAPState(true, false)
+	if len(o.transitions) != 0 {
+		t.Fatal("portal retried old credentials without user action")
+	}
+	if err := o.ResetWifiFailures(); err != nil {
+		t.Fatal(err)
+	}
+	app.handleFirstBootAPState(true, false)
+	if o.CurrentState() != state.WifiConnect || len(o.transitions) != 1 {
+		t.Fatal("portal did not retry after WiFi submission")
+	}
 }
 
 func TestStartStopsOnSIGTERM(t *testing.T) {

@@ -30,7 +30,7 @@ func NewFileStorage(dataDir string) *FileStorage {
 // LoadWifiConfig loads the Wi-Fi configuration from the config file.
 func (fs *FileStorage) LoadWifiConfig() (*WifiConfig, error) {
 	configPath := filepath.Join(fs.dataDir, "config", "wifi.json")
-	
+
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -56,34 +56,32 @@ func (fs *FileStorage) SaveWifiConfig(config *WifiConfig) error {
 	}
 
 	configPath := filepath.Join(configDir, "wifi.json")
-	
+
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal wifi config: %w", err)
 	}
 
-	// Write atomically using a temp file
-	tmpPath := configPath + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write wifi config temp: %w", err)
-	}
-
-	// Sync to ensure data is written to disk
-	f, err := os.Open(tmpPath)
+	f, err := os.CreateTemp(configDir, ".wifi-*.tmp")
 	if err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("failed to open temp file: %w", err)
+		return fmt.Errorf("failed to create wifi config temp: %w", err)
+	}
+	tmpPath := f.Name()
+	defer os.Remove(tmpPath)
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return fmt.Errorf("failed to write wifi config temp: %w", err)
 	}
 	if err := f.Sync(); err != nil {
 		f.Close()
-		os.Remove(tmpPath)
 		return fmt.Errorf("failed to sync temp file: %w", err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("failed to close wifi config temp: %w", err)
+	}
 
 	// Atomic rename
 	if err := os.Rename(tmpPath, configPath); err != nil {
-		os.Remove(tmpPath)
 		return fmt.Errorf("failed to rename wifi config: %w", err)
 	}
 
@@ -93,7 +91,7 @@ func (fs *FileStorage) SaveWifiConfig(config *WifiConfig) error {
 // LoadSystemState loads the system state from the state file.
 func (fs *FileStorage) LoadSystemState() (*SystemState, error) {
 	statePath := filepath.Join(fs.dataDir, "state", "system.json")
-	
+
 	data, err := os.ReadFile(statePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -119,7 +117,7 @@ func (fs *FileStorage) SaveSystemState(state *SystemState) error {
 	}
 
 	statePath := filepath.Join(stateDir, "system.json")
-	
+
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal system state: %w", err)
@@ -156,9 +154,9 @@ func (fs *FileStorage) SaveSystemState(state *SystemState) error {
 // LoadDeviceInfo loads device-specific information.
 func (fs *FileStorage) LoadDeviceInfo() (*DeviceInfo, error) {
 	deviceDir := filepath.Join(fs.dataDir, "device")
-	
+
 	info := &DeviceInfo{}
-	
+
 	// Load device ID
 	deviceIDPath := filepath.Join(deviceDir, "device-id")
 	if data, err := os.ReadFile(deviceIDPath); err == nil {
@@ -188,7 +186,7 @@ func (fs *FileStorage) LoadDeviceInfo() (*DeviceInfo, error) {
 
 // DeviceInfo contains device-specific information.
 type DeviceInfo struct {
-	DeviceID        string
+	DeviceID         string
 	RecoveryPassword string
-	Serial          string
+	Serial           string
 }

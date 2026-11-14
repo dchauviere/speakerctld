@@ -21,16 +21,9 @@ func SettingsAssets() fs.FS {
 	return settingsAssets
 }
 
-// WifiNetwork represents a WiFi network for the captive portal
-type WifiNetwork struct {
-	SSID           string `json:"ssid"`
-	SignalStrength int    `json:"signalStrength"`
-	SignalPercent  int    `json:"signalPercent"`
-}
-
 // SettingsData represents settings data for the settings page
 type SettingsData struct {
-	DeviceName string `json:"deviceName"`
+	DeviceName  string `json:"deviceName"`
 	CurrentSSID string `json:"currentSSID"`
 }
 

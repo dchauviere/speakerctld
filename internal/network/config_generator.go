@@ -26,11 +26,6 @@ const (
 	FirstBootAPIP    = "192.168.42.1"
 	FirstBootAPStart = "192.168.42.100"
 	FirstBootAPEnd   = "192.168.42.200"
-
-	// FallbackAP network settings
-	FallbackAPIP    = "192.168.43.1"
-	FallbackAPStart = "192.168.43.100"
-	FallbackAPEnd   = "192.168.43.200"
 )
 
 // State represents the speaker state (defined locally to avoid import cycle with state package)
@@ -41,7 +36,6 @@ const (
 	FirstBootAP State = "FIRSTBOOT_AP"
 	WifiConnect State = "WIFI_CONNECT"
 	Online      State = "ONLINE"
-	FallbackAP  State = "FALLBACK_AP"
 )
 
 // DnsmasqConfig holds the parameters for generating dnsmasq configuration
@@ -110,22 +104,6 @@ func (g *ConfigGenerator) ConfigureAccessPoint(currentState State, deviceID stri
 	switch currentState {
 	case FirstBootAP:
 		ssid, address = "Speakerctld-Setup-"+deviceID, FirstBootAPIP
-	case FallbackAP:
-		ssid, address = "Speakerctld-Recovery-"+deviceID, FallbackAPIP
-		reader, ok := g.storage.(interface {
-			LoadDeviceInfo() (*storage.DeviceInfo, error)
-		})
-		if !ok {
-			return fmt.Errorf("storage does not support device information")
-		}
-		info, err := reader.LoadDeviceInfo()
-		if err != nil {
-			return fmt.Errorf("load recovery password: %w", err)
-		}
-		password = "speakerctld-recovery"
-		if info != nil && info.RecoveryPassword != "" {
-			password = info.RecoveryPassword
-		}
 	default:
 		return fmt.Errorf("cannot configure access point for state %s", currentState)
 	}
@@ -152,13 +130,6 @@ func (g *ConfigGenerator) GenerateDnsmasqConfig(currentState State) error {
 			AccessPointIP:    FirstBootAPIP,
 			DHCPStartAddress: FirstBootAPStart,
 			DHCPEndAddress:   FirstBootAPEnd,
-		}
-	case FallbackAP:
-		dnsmasqConfig = DnsmasqConfig{
-			NetworkInterface: g.wifiInterface,
-			AccessPointIP:    FallbackAPIP,
-			DHCPStartAddress: FallbackAPStart,
-			DHCPEndAddress:   FallbackAPEnd,
 		}
 	default:
 		// For non-AP states, remove existing config if it exists
@@ -229,7 +200,7 @@ func (g *ConfigGenerator) ConfigureWifiClient() error {
 	}
 
 	// Connect using NetworkManager
-	if err := g.nmManager.Connect(wifiConfig.SSID, wifiConfig.PSK); err != nil {
+	if err := g.nmManager.Connect(g.wifiInterface, wifiConfig.SSID, wifiConfig.PSK, wifiConfig.Hidden); err != nil {
 		return fmt.Errorf("failed to configure WiFi client: %w", err)
 	}
 

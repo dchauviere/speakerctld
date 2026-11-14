@@ -81,6 +81,50 @@ func TestNewStateMachine_InitialState(t *testing.T) {
 	})
 }
 
+func TestNewStateMachineMigratesLegacyFallback(t *testing.T) {
+	mock := &MockStorage{state: &storage.SystemState{
+		Provisioned: true, State: "FALLBACK_AP", WifiFailureCount: 1,
+	}}
+	sm, err := NewStateMachine(mock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sm.CurrentState() != FirstBootAP || !sm.IsProvisioned() || sm.WifiFailureCount() != maxWifiFailures {
+		t.Fatalf("unexpected migrated state: %s provisioned=%v failures=%d", sm.CurrentState(), sm.IsProvisioned(), sm.WifiFailureCount())
+	}
+	if mock.lastSavedState == nil || mock.lastSavedState.State != string(FirstBootAP) {
+		t.Fatalf("migration not persisted: %+v", mock.lastSavedState)
+	}
+	mock.saveStateErr = errors.New("save failed")
+	if _, err := NewStateMachine(mock); !errors.Is(err, mock.saveStateErr) {
+		t.Fatalf("expected migration error, got %v", err)
+	}
+}
+
+func TestWifiFailurePersistenceRollback(t *testing.T) {
+	saveErr := errors.New("save failed")
+	mock := &MockStorage{
+		state:        &storage.SystemState{Provisioned: true, State: string(WifiConnect), WifiFailureCount: maxWifiFailures - 1},
+		saveStateErr: saveErr,
+	}
+	sm, err := NewStateMachine(mock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.IncrementWifiFailures(); !errors.Is(err, saveErr) {
+		t.Fatalf("expected save failure, got %v", err)
+	}
+	if sm.CurrentState() != WifiConnect || sm.WifiFailureCount() != maxWifiFailures-1 {
+		t.Fatalf("state was not rolled back: %s, %d", sm.CurrentState(), sm.WifiFailureCount())
+	}
+	if err := sm.SetProvisioned(); !errors.Is(err, saveErr) {
+		t.Fatalf("expected provisioning save failure, got %v", err)
+	}
+	if sm.WifiFailureCount() != maxWifiFailures-1 {
+		t.Fatalf("provisioning did not restore failure count: %d", sm.WifiFailureCount())
+	}
+}
+
 func TestStateMachine_Transitions(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -121,49 +165,25 @@ func TestStateMachine_Transitions(t *testing.T) {
 			expectedSuccess: true,
 		},
 		{
-			name:            "WIFI_CONNECT to FALLBACK_AP",
-			initialState:    WifiConnect,
-			provisioned:     true,
-			targetState:     FallbackAP,
-			expectedSuccess: true,
-		},
-		{
-			name:            "WIFI_CONNECT to FIRSTBOOT_AP (invalid)",
+			name:            "WIFI_CONNECT to FIRSTBOOT_AP",
 			initialState:    WifiConnect,
 			provisioned:     true,
 			targetState:     FirstBootAP,
-			expectedSuccess: false,
-			expectedError:   ErrInvalidTransition,
-		},
-		{
-			name:            "ONLINE to FALLBACK_AP",
-			initialState:    Online,
-			provisioned:     true,
-			targetState:     FallbackAP,
 			expectedSuccess: true,
 		},
 		{
-			name:            "ONLINE to WIFI_CONNECT (invalid)",
+			name:            "ONLINE to FIRSTBOOT_AP",
 			initialState:    Online,
 			provisioned:     true,
-			targetState:     WifiConnect,
-			expectedSuccess: false,
-			expectedError:   ErrInvalidTransition,
-		},
-		{
-			name:            "FALLBACK_AP to WIFI_CONNECT",
-			initialState:    FallbackAP,
-			provisioned:     true,
-			targetState:     WifiConnect,
+			targetState:     FirstBootAP,
 			expectedSuccess: true,
 		},
 		{
-			name:            "FALLBACK_AP to ONLINE (invalid)",
-			initialState:    FallbackAP,
+			name:            "ONLINE to WIFI_CONNECT",
+			initialState:    Online,
 			provisioned:     true,
-			targetState:     Online,
-			expectedSuccess: false,
-			expectedError:   ErrInvalidTransition,
+			targetState:     WifiConnect,
+			expectedSuccess: true,
 		},
 	}
 
@@ -231,7 +251,7 @@ func TestStateMachine_WifiFailureTracking(t *testing.T) {
 		}
 	})
 
-	t.Run("increment failures on FALLBACK_AP transition", func(t *testing.T) {
+	t.Run("block automatic retry on portal transition", func(t *testing.T) {
 		mock := &MockStorage{
 			state: &storage.SystemState{
 				Provisioned:      true,
@@ -241,9 +261,9 @@ func TestStateMachine_WifiFailureTracking(t *testing.T) {
 		}
 		sm, _ := NewStateMachine(mock)
 
-		_ = sm.Transition(FallbackAP)
-		if sm.WifiFailureCount() != 2 {
-			t.Errorf("expected failure count to be 2, got %d", sm.WifiFailureCount())
+		_ = sm.Transition(FirstBootAP)
+		if sm.WifiFailureCount() != maxWifiFailures {
+			t.Errorf("expected failure count to be %d, got %d", maxWifiFailures, sm.WifiFailureCount())
 		}
 	})
 }
@@ -264,8 +284,8 @@ func TestStateMachine_AutoFallback(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if sm.CurrentState() != FallbackAP {
-		t.Errorf("expected automatic transition to FALLBACK_AP, got %s", sm.CurrentState())
+	if sm.CurrentState() != FirstBootAP {
+		t.Errorf("expected automatic transition to FIRSTBOOT_AP, got %s", sm.CurrentState())
 	}
 	if sm.WifiFailureCount() != 3 {
 		t.Errorf("expected failure count 3, got %d", sm.WifiFailureCount())
@@ -280,7 +300,9 @@ func TestStateMachine_Provisioning(t *testing.T) {
 		t.Error("expected device to not be provisioned initially")
 	}
 
-	sm.SetProvisioned()
+	if err := sm.SetProvisioned(); err != nil {
+		t.Fatal(err)
+	}
 	if !sm.IsProvisioned() {
 		t.Error("expected device to be provisioned after SetProvisioned")
 	}
@@ -312,6 +334,60 @@ func TestStateMachine_TransitionPersistenceFailure(t *testing.T) {
 	}
 }
 
+func TestStateMachine_OnlineReconnect(t *testing.T) {
+	mock := &MockStorage{state: &storage.SystemState{
+		Provisioned:      true,
+		State:            string(Online),
+		WifiFailureCount: 2,
+	}}
+	sm, err := NewStateMachine(mock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sm.CanTransitionTo(WifiConnect) {
+		t.Fatal("expected reconnect transition to be allowed")
+	}
+	if err := sm.Transition(WifiConnect); err != nil {
+		t.Fatalf("reconnect transition failed: %v", err)
+	}
+	if sm.CurrentState() != WifiConnect || sm.WifiFailureCount() != 0 {
+		t.Fatalf("expected WIFI_CONNECT with zero failures, got %s with %d", sm.CurrentState(), sm.WifiFailureCount())
+	}
+	if mock.lastSavedState.State != string(WifiConnect) || mock.lastSavedState.WifiFailureCount != 0 {
+		t.Fatalf("unexpected persisted state: %+v", mock.lastSavedState)
+	}
+	for i := 0; i < maxWifiFailures; i++ {
+		if err := sm.IncrementWifiFailures(); err != nil {
+			t.Fatalf("increment failure count: %v", err)
+		}
+	}
+	if sm.CurrentState() != FirstBootAP {
+		t.Fatalf("expected FIRSTBOOT_AP after repeated failures, got %s", sm.CurrentState())
+	}
+}
+
+func TestStateMachine_OnlineReconnectPersistenceFailure(t *testing.T) {
+	saveErr := errors.New("persistence failed")
+	mock := &MockStorage{
+		state: &storage.SystemState{
+			Provisioned:      true,
+			State:            string(Online),
+			WifiFailureCount: 2,
+		},
+		saveStateErr: saveErr,
+	}
+	sm, err := NewStateMachine(mock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.Transition(WifiConnect); !errors.Is(err, saveErr) {
+		t.Fatalf("expected persistence error, got %v", err)
+	}
+	if sm.CurrentState() != Online || sm.WifiFailureCount() != 2 {
+		t.Fatalf("expected ONLINE with 2 failures after rollback, got %s with %d", sm.CurrentState(), sm.WifiFailureCount())
+	}
+}
+
 func TestStateMachine_CanTransitionTo(t *testing.T) {
 	mock := &MockStorage{
 		state: &storage.SystemState{
@@ -323,12 +399,11 @@ func TestStateMachine_CanTransitionTo(t *testing.T) {
 	sm, _ := NewStateMachine(mock)
 
 	tests := []struct {
-		target    State
-		expected  bool
+		target   State
+		expected bool
 	}{
 		{Online, true},
-		{FallbackAP, true},
-		{FirstBootAP, false},
+		{FirstBootAP, true},
 		{WifiConnect, false},
 	}
 

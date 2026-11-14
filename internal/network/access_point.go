@@ -21,20 +21,9 @@ func (nmc *NetworkManagerClient) StartAccessPoint(ctx context.Context, iface, ss
 		return fmt.Errorf("invalid access point password length")
 	}
 
-	var device dbus.ObjectPath
-	call := nmc.nmObj.CallWithContext(ctx, NMInterface+".GetDeviceByIpIface", 0, iface)
-	if call.Err != nil {
-		return fmt.Errorf("find interface %s: %w", iface, call.Err)
-	}
-	if err := call.Store(&device); err != nil {
-		return fmt.Errorf("parse device for %s: %w", iface, err)
-	}
-	deviceType, err := nmc.conn.Object(NMService, device).GetProperty(NMDeviceIface + ".DeviceType")
+	device, err := nmc.findWifiDevice(ctx, iface)
 	if err != nil {
-		return fmt.Errorf("get device type for %s: %w", iface, err)
-	}
-	if deviceType.Value() != NMDeviceTypeWifi {
-		return fmt.Errorf("interface %s is not a Wi-Fi device", iface)
+		return err
 	}
 
 	settings := map[string]map[string]dbus.Variant{
@@ -68,7 +57,7 @@ func (nmc *NetworkManagerClient) StartAccessPoint(ctx context.Context, iface, ss
 		}
 	}
 	options := map[string]dbus.Variant{"persist": dbus.MakeVariant("volatile")}
-	call = nmc.nmObj.CallWithContext(ctx, NMInterface+".AddAndActivateConnection2", 0,
+	call := nmc.nmObj.CallWithContext(ctx, NMInterface+".AddAndActivateConnection2", 0,
 		settings, device, dbus.ObjectPath("/"), options)
 	if call.Err != nil {
 		return fmt.Errorf("activate access point on %s: %w", iface, call.Err)
@@ -88,6 +77,29 @@ func (nmc *NetworkManagerClient) StartAccessPoint(ctx context.Context, iface, ss
 	}
 	log.Printf("NetworkManager access point activated on %s with address %s/24", iface, address)
 	return nil
+}
+
+func (nmc *NetworkManagerClient) findWifiDevice(ctx context.Context, iface string) (dbus.ObjectPath, error) {
+	var device dbus.ObjectPath
+	call := nmc.nmObj.CallWithContext(ctx, NMInterface+".GetDeviceByIpIface", 0, iface)
+	if call.Err != nil {
+		return "", fmt.Errorf("find interface %s: %w", iface, call.Err)
+	}
+	if err := call.Store(&device); err != nil {
+		return "", fmt.Errorf("parse device for %s: %w", iface, err)
+	}
+	var deviceType dbus.Variant
+	call = nmc.conn.Object(NMService, device).CallWithContext(ctx, "org.freedesktop.DBus.Properties.Get", 0, NMDeviceIface, "DeviceType")
+	if call.Err != nil {
+		return "", fmt.Errorf("get device type for %s: %w", iface, call.Err)
+	}
+	if err := call.Store(&deviceType); err != nil {
+		return "", fmt.Errorf("parse device type for %s: %w", iface, err)
+	}
+	if deviceType.Value() != NMDeviceTypeWifi {
+		return "", fmt.Errorf("interface %s is not a Wi-Fi device", iface)
+	}
+	return device, nil
 }
 
 func (nmc *NetworkManagerClient) waitForAccessPoint(ctx context.Context, active dbus.ObjectPath) error {

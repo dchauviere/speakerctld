@@ -188,8 +188,6 @@ func (s *SpeakerCtld) handleStateTransitions() {
 	case state.Online:
 		s.handleOnlineState(hasCredentials, wifiConnected)
 
-	case state.FallbackAP:
-		s.handleFallbackAPState(hasCredentials, wifiConnected)
 	}
 }
 
@@ -205,13 +203,9 @@ func (s *SpeakerCtld) handleFirstBootAPState(hasCredentials, wifiConnected bool)
 	}
 
 	// If we have credentials and are provisioned, try to connect
-	if hasCredentials {
+	if hasCredentials && s.orchestrator.WifiFailureCount() == 0 {
 		log.Println("Credentials available, attempting to transition to WIFI_CONNECT")
-		if err := s.transitionTo(state.WifiConnect, "credentials available"); err == nil {
-			// Successfully transitioned to WIFI_CONNECT
-			// Reset failure counter
-			s.orchestrator.ResetWifiFailures()
-		}
+		_ = s.transitionTo(state.WifiConnect, "credentials available")
 	}
 }
 
@@ -221,9 +215,7 @@ func (s *SpeakerCtld) handleWifiConnectState(hasCredentials, wifiConnected bool)
 	if !hasCredentials {
 		// Lost credentials, go back to provisioning
 		log.Println("Credentials lost, falling back to FIRSTBOOT_AP")
-		if err := s.transitionTo(state.FirstBootAP, "credentials lost"); err == nil {
-			// Stay in FIRSTBOOT_AP until user re-provisions
-		}
+		_ = s.transitionTo(state.FirstBootAP, "credentials lost")
 		return
 	}
 
@@ -231,17 +223,13 @@ func (s *SpeakerCtld) handleWifiConnectState(hasCredentials, wifiConnected bool)
 	if wifiConnected {
 		// WiFi is connected, transition to ONLINE
 		log.Println("WiFi connected, transitioning to ONLINE")
-		if err := s.transitionTo(state.Online, "wifi connected"); err == nil {
-			// Successfully online
-			// Reset failure counter
-			s.orchestrator.ResetWifiFailures()
-		}
+		_ = s.transitionTo(state.Online, "wifi connected")
 	} else {
 		// WiFi not connected, check failure count
 		failures := s.orchestrator.WifiFailureCount()
 		log.Printf("WiFi not connected, failure count: %d", failures)
 
-		// Increment failure counter - this may trigger automatic transition to FallbackAP
+		// Increment failure counter - this may trigger a return to the captive portal
 		// if threshold is reached (handled in orchestrator)
 		if err := s.orchestrator.IncrementWifiFailures(); err != nil {
 			log.Printf("Error incrementing failure counter: %v", err)
@@ -254,24 +242,8 @@ func (s *SpeakerCtld) handleOnlineState(hasCredentials, wifiConnected bool) {
 	// If WiFi disconnects, go back to WIFI_CONNECT
 	if !wifiConnected {
 		log.Println("WiFi disconnected from ONLINE state, transitioning to WIFI_CONNECT")
-		if err := s.transitionTo(state.WifiConnect, "wifi disconnected"); err == nil {
-			// Reset failure counter
-			s.orchestrator.ResetWifiFailures()
-		}
+		_ = s.transitionTo(state.WifiConnect, "wifi disconnected")
 		return
-	}
-}
-
-// handleFallbackAPState handles state transitions from FALLBACK_AP.
-func (s *SpeakerCtld) handleFallbackAPState(hasCredentials, wifiConnected bool) {
-	// In FALLBACK_AP mode, we're in AP mode and waiting for user action
-	// Check if we should try to reconnect
-	if hasCredentials {
-		log.Println("Credentials available in FALLBACK_AP, attempting to reconnect")
-		if err := s.transitionTo(state.WifiConnect, "retrying connection"); err == nil {
-			// Reset failure counter when retrying
-			s.orchestrator.ResetWifiFailures()
-		}
 	}
 }
 
@@ -303,10 +275,10 @@ func (s *SpeakerCtld) syncSystemdTargetForState(target state.State) error {
 	log.Printf("Syncing systemd target for state: %s", target)
 
 	// Use the Orchestrator to handle state-specific setup
-	// For FIRSTBOOT_AP and FALLBACK_AP, this generates configs and enables the AP target
+	// For FIRSTBOOT_AP, this generates configs and enables the AP target
 	// For WIFI_CONNECT and ONLINE, this enables the wifi-client target
 	switch target {
-	case state.FirstBootAP, state.FallbackAP:
+	case state.FirstBootAP:
 		// These states need config generation and AP target activation
 		return s.orchestrator.TransitionTo(target)
 	case state.WifiConnect, state.Online:

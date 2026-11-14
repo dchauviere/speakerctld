@@ -87,8 +87,6 @@ func (o *Orchestrator) TransitionTo(target State) error {
 		return o.handleWifiConnect()
 	case Online:
 		return o.handleOnline()
-	case FallbackAP:
-		return o.handleFallbackAP()
 	default:
 		return nil
 	}
@@ -132,11 +130,6 @@ func (o *Orchestrator) handleOnline() error {
 	// The actual connection monitoring is done elsewhere
 	log.Println("System is online")
 	return nil
-}
-
-// handleFallbackAP sets up the fallback access point.
-func (o *Orchestrator) handleFallbackAP() error {
-	return o.handleAccessPoint(FallbackAP)
 }
 
 func (o *Orchestrator) handleAccessPoint(target State) error {
@@ -187,19 +180,21 @@ func (o *Orchestrator) WifiFailureCount() int {
 }
 
 // ResetWifiFailures resets the Wi-Fi failure counter.
-func (o *Orchestrator) ResetWifiFailures() {
-	o.stateMachine.ResetWifiFailures()
+func (o *Orchestrator) ResetWifiFailures() error {
+	return o.stateMachine.ResetWifiFailures()
 }
 
 // IncrementWifiFailures increments the Wi-Fi failure counter.
-// If the threshold is reached, it automatically transitions to FallbackAP.
+// If the threshold is reached, it activates the captive portal.
 func (o *Orchestrator) IncrementWifiFailures() error {
 	previous := o.stateMachine.CurrentState()
 	if err := o.stateMachine.IncrementWifiFailures(); err != nil {
 		return err
 	}
-	if previous != FallbackAP && o.stateMachine.CurrentState() == FallbackAP {
-		return o.handleFallbackAP()
+	if previous != FirstBootAP && o.stateMachine.CurrentState() == FirstBootAP {
+		if err := o.handleFirstBootAP(); err != nil {
+			return errors.Join(err, o.stateMachine.Transition(previous))
+		}
 	}
 	return nil
 }
@@ -211,8 +206,8 @@ func (o *Orchestrator) CanTransitionTo(target State) bool {
 
 // SetProvisioned marks the device as provisioned.
 // This is called after Wi-Fi configuration is received.
-func (o *Orchestrator) SetProvisioned() {
-	o.stateMachine.SetProvisioned()
+func (o *Orchestrator) SetProvisioned() error {
+	return o.stateMachine.SetProvisioned()
 }
 
 // Transition performs a simple state transition without orchestration.

@@ -5,19 +5,18 @@ This package implements the state machine for the Speakerctld Speaker system. It
 ## Overview
 
 The state machine manages the following states:
-- **FIRSTBOOT_AP**: Initial state, open AP for Wi-Fi provisioning
+- **FIRSTBOOT_AP**: Open captive portal for initial provisioning and Wi-Fi recovery
 - **WIFI_CONNECT**: Attempting to connect to configured Wi-Fi
 - **ONLINE**: Successfully connected to Wi-Fi
-- **FALLBACK_AP**: Fallback state, secured AP for recovery
 
 ### State Transitions
 
 ```
-FIRSTBOOT_AP -> WIFI_CONNECT (on provisioning)
+FIRSTBOOT_AP -> WIFI_CONNECT (on Wi-Fi submission)
 WIFI_CONNECT -> ONLINE (on successful connection)
-WIFI_CONNECT -> FALLBACK_AP (on connection failure)
-ONLINE -> FALLBACK_AP (on connection loss)
-FALLBACK_AP -> WIFI_CONNECT (on retry)
+WIFI_CONNECT -> FIRSTBOOT_AP (after repeated connection failures or missing credentials)
+ONLINE -> WIFI_CONNECT (on connection loss)
+ONLINE -> FIRSTBOOT_AP (manual recovery)
 ```
 
 ## Usage
@@ -91,9 +90,24 @@ func main() {
 ### Access point setup
 
 NetworkManager must manage the selected Wi-Fi interface and support AP mode.
-It activates an ephemeral AP profile and assigns `192.168.42.1/24` for
-FIRSTBOOT_AP or `192.168.43.1/24` for FALLBACK_AP. The first-boot AP remains
-open; the recovery AP uses the stored recovery password.
+It activates an ephemeral open AP profile named `Speakerctld-Setup-<device-id>`
+and assigns `192.168.42.1/24`. The same open network is used for recovery;
+anyone in range can access the portal while it is active.
+Wi-Fi passwords are sent over this open portal without transport encryption;
+use the portal only in a trusted environment. Stored Wi-Fi credentials are
+written with owner-only permissions.
+
+On first boot the portal shows only the Wi-Fi selection page. Once provisioned,
+it shows settings, with a link to select Wi-Fi again. After connection failures,
+the portal remains active until Wi-Fi credentials are submitted again. Devices
+with a persisted legacy `FALLBACK_AP` state are migrated to `FIRSTBOOT_AP`.
+
+The Wi-Fi page requests an explicit NetworkManager scan on the selected
+interface. Scanning while the AP is active depends on the radio and driver and
+may briefly interrupt portal clients; errors are displayed and the network can
+be entered manually. Open and WPA/WPA2 personal networks are supported;
+enterprise, WEP, WPA3-only and OWE networks are shown as unsupported. Hidden
+networks can be entered manually.
 
 After NetworkManager reports the AP active, `speakerctld-ap.target` starts
 `speakerctld-dnsmasq.service` for DHCP and captive DNS. Install the updated
@@ -161,4 +175,4 @@ The state machine automatically persists the current state and Wi-Fi failure cou
 
 ## Wi-Fi Failure Tracking
 
-The state machine tracks Wi-Fi connection failures. After 3 consecutive failures, it automatically transitions to FALLBACK_AP state. The failure count is reset when a new connection attempt is made.
+The state machine tracks Wi-Fi connection failures. After 3 consecutive failures, it returns to the captive portal. Submitting Wi-Fi credentials resets the failure count and starts a new connection attempt.

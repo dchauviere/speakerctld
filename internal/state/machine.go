@@ -13,38 +13,53 @@ var ErrInvalidTransition = errors.New("invalid state transition")
 // ErrNotProvisioned is returned when trying to transition from FIRSTBOOT_AP without provisioning.
 var ErrNotProvisioned = errors.New("device not provisioned")
 
-// maxWifiFailures is the threshold for triggering fallback mode.
+// maxWifiFailures is the threshold for returning to the captive portal.
 const maxWifiFailures = 3
 
 // stateMachine implements the StateMachine interface.
 type stateMachine struct {
-	mu             sync.RWMutex
-	currentState   State
-	provisioned    bool
-	wifiFailures   int
-	storage        storage.Storage
+	mu           sync.RWMutex
+	currentState State
+	provisioned  bool
+	wifiFailures int
+	storage      storage.Storage
 }
 
 // NewStateMachine creates a new state machine with the given storage backend.
 // It loads the initial state from persistent storage.
 func NewStateMachine(storage storage.Storage) (StateMachine, error) {
-    sysState, err := storage.LoadSystemState()
-    if err != nil || sysState == nil {  // Add check for nil state
-        // If no state exists, start in FIRSTBOOT_AP
-        return &stateMachine{
-            currentState: FirstBootAP,
-            provisioned:  false,
-            wifiFailures: 0,
-            storage:      storage,
-        }, nil
-    }
+	sysState, err := storage.LoadSystemState()
+	if err != nil {
+		return nil, err
+	}
+	if sysState == nil {
+		// If no state exists, start in FIRSTBOOT_AP
+		return &stateMachine{
+			currentState: FirstBootAP,
+			provisioned:  false,
+			wifiFailures: 0,
+			storage:      storage,
+		}, nil
+	}
 
-    return &stateMachine{
-        currentState:   State(sysState.State),
-        provisioned:    sysState.Provisioned,
-        wifiFailures:   sysState.WifiFailureCount,
-        storage:        storage,
-    }, nil
+	if sysState.State == "FALLBACK_AP" {
+		migrated := *sysState
+		migrated.State = string(FirstBootAP)
+		if migrated.WifiFailureCount < maxWifiFailures {
+			migrated.WifiFailureCount = maxWifiFailures
+		}
+		if err := storage.SaveSystemState(&migrated); err != nil {
+			return nil, err
+		}
+		sysState = &migrated
+	}
+
+	return &stateMachine{
+		currentState: State(sysState.State),
+		provisioned:  sysState.Provisioned,
+		wifiFailures: sysState.WifiFailureCount,
+		storage:      storage,
+	}, nil
 }
 
 // CurrentState returns the current state of the machine.
@@ -65,6 +80,8 @@ func (sm *stateMachine) Transition(target State) error {
 		return err
 	}
 
+	previousState, previousWifiFailures := sm.currentState, sm.wifiFailures
+
 	// Handle state-specific logic
 	switch target {
 	case WifiConnect:
@@ -73,9 +90,8 @@ func (sm *stateMachine) Transition(target State) error {
 	case Online:
 		// Reset failure count when successfully connected
 		sm.wifiFailures = 0
-	case FallbackAP:
-		// Increment failure count when transitioning to fallback
-		sm.wifiFailures++
+	case FirstBootAP:
+		sm.wifiFailures = maxWifiFailures
 	}
 
 	// Update state
@@ -83,8 +99,8 @@ func (sm *stateMachine) Transition(target State) error {
 
 	// Persist state
 	if err := sm.saveState(); err != nil {
-		// Rollback state on persistence failure
-		sm.currentState = sm.getPreviousState(target)
+		sm.currentState = previousState
+		sm.wifiFailures = previousWifiFailures
 		return err
 	}
 
@@ -105,20 +121,12 @@ func (sm *stateMachine) validateTransition(target State) error {
 		}
 
 	case WifiConnect:
-		// Can transition to ONLINE or FALLBACK_AP
-		if target != Online && target != FallbackAP {
+		if target != Online && target != FirstBootAP {
 			return ErrInvalidTransition
 		}
 
 	case Online:
-		// Can only transition to FALLBACK_AP
-		if target != FallbackAP {
-			return ErrInvalidTransition
-		}
-
-	case FallbackAP:
-		// Can only transition to WIFI_CONNECT
-		if target != WifiConnect {
+		if target != WifiConnect && target != FirstBootAP {
 			return ErrInvalidTransition
 		}
 
@@ -127,26 +135,6 @@ func (sm *stateMachine) validateTransition(target State) error {
 	}
 
 	return nil
-}
-
-// getPreviousState returns the likely previous state before a transition.
-// Used for rollback on persistence failure.
-func (sm *stateMachine) getPreviousState(current State) State {
-	// This is a simplified rollback - in production you might want
-	// to track the full history or use a different strategy
-	switch current {
-	case WifiConnect:
-		if sm.provisioned {
-			return FirstBootAP
-		}
-		return FirstBootAP
-	case Online:
-		return WifiConnect
-	case FallbackAP:
-		return WifiConnect
-	default:
-		return FirstBootAP
-	}
 }
 
 // saveState persists the current state to storage.
@@ -161,11 +149,17 @@ func (sm *stateMachine) saveState() error {
 
 // SetProvisioned marks the device as provisioned.
 // This is called after Wi-Fi configuration is received.
-func (sm *stateMachine) SetProvisioned() {
+func (sm *stateMachine) SetProvisioned() error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+	previousProvisioned, previousFailures := sm.provisioned, sm.wifiFailures
 	sm.provisioned = true
-	_ = sm.saveState() // Best effort save
+	sm.wifiFailures = 0
+	if err := sm.saveState(); err != nil {
+		sm.provisioned, sm.wifiFailures = previousProvisioned, previousFailures
+		return err
+	}
+	return nil
 }
 
 // IsProvisioned returns whether the device has been provisioned.
@@ -183,36 +177,33 @@ func (sm *stateMachine) WifiFailureCount() int {
 }
 
 // ResetWifiFailures resets the Wi-Fi failure counter.
-func (sm *stateMachine) ResetWifiFailures() {
+func (sm *stateMachine) ResetWifiFailures() error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+	previous := sm.wifiFailures
 	sm.wifiFailures = 0
-	_ = sm.saveState() // Best effort save
+	if err := sm.saveState(); err != nil {
+		sm.wifiFailures = previous
+		return err
+	}
+	return nil
 }
 
 // IncrementWifiFailures increments the Wi-Fi failure counter.
-// If the threshold is reached, it automatically transitions to FallbackAP.
+// If the threshold is reached, it automatically transitions to the captive portal.
 func (sm *stateMachine) IncrementWifiFailures() error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	previousState, previousFailures := sm.currentState, sm.wifiFailures
 	sm.wifiFailures++
-	
-	// Check if we need to transition to fallback
+
 	if sm.wifiFailures >= maxWifiFailures && sm.currentState == WifiConnect {
-		// Validate we can transition
-		if err := sm.validateTransition(FallbackAP); err == nil {
-			sm.currentState = FallbackAP
-			if err := sm.saveState(); err != nil {
-				// Rollback on save failure
-				sm.wifiFailures--
-				return err
-			}
-		}
-	} else {
-		if err := sm.saveState(); err != nil {
-			return err
-		}
+		sm.currentState = FirstBootAP
+	}
+	if err := sm.saveState(); err != nil {
+		sm.currentState, sm.wifiFailures = previousState, previousFailures
+		return err
 	}
 
 	return nil

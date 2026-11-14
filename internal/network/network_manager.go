@@ -1,6 +1,7 @@
 package network
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -64,7 +65,7 @@ func (nmc *NetworkManagerClient) Close() {
 // AddWifiConnection creates a new volatile Wi-Fi connection and activates it.
 // If psk is empty, it creates an open network connection.
 // The connection is not saved to disk (volatile = true).
-func (nmc *NetworkManagerClient) AddWifiConnection(ssid, psk string) error {
+func (nmc *NetworkManagerClient) AddWifiConnection(iface, ssid, psk string, hidden bool) error {
 	// First, cleanup any existing connections with this SSID
 	connections, err := nmc.GetConnectionsBySSID(ssid)
 	if err != nil {
@@ -85,14 +86,15 @@ func (nmc *NetworkManagerClient) AddWifiConnection(ssid, psk string) error {
 	// Settings structure: map[section]map[key]value
 	settings := map[string]map[string]dbus.Variant{
 		"connection": {
-			"type":        dbus.MakeVariant(ConnectionTypeWireless),
-			"id":          dbus.MakeVariant(connectionName),
-			"autoconnect": dbus.MakeVariant(true),
+			"type":           dbus.MakeVariant(ConnectionTypeWireless),
+			"id":             dbus.MakeVariant(connectionName),
+			"autoconnect":    dbus.MakeVariant(true),
+			"interface-name": dbus.MakeVariant(iface),
 		},
 		"802-11-wireless": {
 			"ssid":   dbus.MakeVariant(ssidBytes),
 			"mode":   dbus.MakeVariant("infrastructure"),
-			"hidden": dbus.MakeVariant(false),
+			"hidden": dbus.MakeVariant(hidden),
 		},
 		"ipv4": {
 			"method": dbus.MakeVariant("auto"),
@@ -112,7 +114,7 @@ func (nmc *NetworkManagerClient) AddWifiConnection(ssid, psk string) error {
 	}
 
 	// Find wireless device
-	wirelessDevice, err := nmc.findWirelessDevice()
+	wirelessDevice, err := nmc.findWifiDevice(context.Background(), iface)
 	if err != nil {
 		return fmt.Errorf("failed to find wireless device: %w", err)
 	}
@@ -198,55 +200,6 @@ func (nmc *NetworkManagerClient) GetConnectionsBySSID(ssid string) ([]dbus.Objec
 	}
 
 	return matchingPaths, nil
-}
-
-// findWirelessDevice finds the first wireless device
-func (nmc *NetworkManagerClient) findWirelessDevice() (dbus.ObjectPath, error) {
-	// Get all devices
-	var devicePaths []dbus.ObjectPath
-
-	// Try GetAllDevices first
-	call := nmc.nmObj.Call("org.freedesktop.NetworkManager.GetAllDevices", 0)
-	if call.Err != nil {
-		// Try GetDevices as fallback
-		call := nmc.nmObj.Call("org.freedesktop.NetworkManager.GetDevices", 0)
-		if call.Err != nil {
-			return "", fmt.Errorf("failed to get devices: %w", call.Err)
-		}
-		if err := call.Store(&devicePaths); err != nil {
-			return "", fmt.Errorf("failed to parse device paths: %w", err)
-		}
-	} else {
-		if err := call.Store(&devicePaths); err != nil {
-			return "", fmt.Errorf("failed to parse device paths: %w", err)
-		}
-	}
-
-	// Find wireless device
-	for _, devicePath := range devicePaths {
-		deviceObj := nmc.conn.Object(NMService, devicePath)
-
-		// Get DeviceType
-		var deviceType uint32
-
-		propsCall := deviceObj.Call("org.freedesktop.DBus.Properties.Get", 0,
-			"org.freedesktop.NetworkManager.Device", "DeviceType")
-
-		if propsCall.Err != nil {
-			continue
-		}
-
-		if err := propsCall.Store(&deviceType); err != nil {
-			continue
-		}
-
-		// DeviceType 2 is WiFi (from NMDeviceType enum)
-		if deviceType == NMDeviceTypeWifi {
-			return devicePath, nil
-		}
-	}
-
-	return "", fmt.Errorf("no wireless device found")
 }
 
 // RemoveAllSpeakerConnections removes all connections created by this application
@@ -345,8 +298,8 @@ func NewWifiConnectionManager() (*WifiConnectionManager, error) {
 
 // Connect connects to a WiFi network using NetworkManager.
 // Creates a volatile connection that is not saved to disk.
-func (wcm *WifiConnectionManager) Connect(ssid, psk string) error {
-	return wcm.client.AddWifiConnection(ssid, psk)
+func (wcm *WifiConnectionManager) Connect(iface, ssid, psk string, hidden bool) error {
+	return wcm.client.AddWifiConnection(iface, ssid, psk, hidden)
 }
 
 // Disconnect removes the connection for a specific SSID
