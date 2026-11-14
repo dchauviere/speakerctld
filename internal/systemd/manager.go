@@ -2,17 +2,19 @@ package systemd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 )
 
 // SystemdManager provides an interface to manage systemd units via DBus.
 type SystemdManager struct {
-	conn   *dbus.Conn
-	obj    dbus.BusObject
-	iface  string
+	conn  *dbus.Conn
+	obj   dbus.BusObject
+	iface string
 }
 
 // NewSystemdManager creates a new SystemdManager connected to the system bus.
@@ -23,10 +25,22 @@ func NewSystemdManager() (*SystemdManager, error) {
 	}
 
 	obj := conn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
+	if err := conn.AddMatchSignal(
+		dbus.WithMatchObjectPath("/org/freedesktop/systemd1"),
+		dbus.WithMatchInterface("org.freedesktop.systemd1.Manager"),
+		dbus.WithMatchMember("JobRemoved"),
+	); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("subscribe to systemd job signals: %w", err)
+	}
+	if call := obj.Call("org.freedesktop.systemd1.Manager.Subscribe", 0); call.Err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("subscribe to systemd: %w", call.Err)
+	}
 	return &SystemdManager{
-		conn:   conn,
-		obj:    obj,
-		iface:  "org.freedesktop.systemd1.Manager",
+		conn:  conn,
+		obj:   obj,
+		iface: "org.freedesktop.systemd1.Manager",
 	}, nil
 }
 
@@ -39,10 +53,8 @@ func (m *SystemdManager) Close() {
 
 // StartUnit starts a systemd unit.
 func (m *SystemdManager) StartUnit(unitName string) error {
-	mode := "replace"
-	call := m.obj.CallWithContext(context.Background(), m.iface+".StartUnit", 0, unitName, mode)
-	if call.Err != nil {
-		return fmt.Errorf("failed to start unit %s: %w", unitName, call.Err)
+	if err := m.runUnitJob("StartUnit", unitName); err != nil {
+		return err
 	}
 	log.Printf("Started systemd unit: %s", unitName)
 	return nil
@@ -50,24 +62,64 @@ func (m *SystemdManager) StartUnit(unitName string) error {
 
 // StopUnit stops a systemd unit.
 func (m *SystemdManager) StopUnit(unitName string) error {
-	mode := "replace"
-	call := m.obj.CallWithContext(context.Background(), m.iface+".StopUnit", 0, unitName, mode)
-	if call.Err != nil {
-		return fmt.Errorf("failed to stop unit %s: %w", unitName, call.Err)
+	if err := m.runUnitJob("StopUnit", unitName); err != nil {
+		return err
 	}
 	log.Printf("Stopped systemd unit: %s", unitName)
 	return nil
 }
 
+// StopUnitIfExists stops a legacy unit when it is still installed.
+func (m *SystemdManager) StopUnitIfExists(unitName string) error {
+	err := m.StopUnit(unitName)
+	var dbusErr dbus.Error
+	if errors.As(err, &dbusErr) && dbusErr.Name == "org.freedesktop.systemd1.NoSuchUnit" {
+		return nil
+	}
+	return err
+}
+
 // RestartUnit restarts a systemd unit.
 func (m *SystemdManager) RestartUnit(unitName string) error {
-	mode := "replace"
-	call := m.obj.CallWithContext(context.Background(), m.iface+".RestartUnit", 0, unitName, mode)
-	if call.Err != nil {
-		return fmt.Errorf("failed to restart unit %s: %w", unitName, call.Err)
+	if err := m.runUnitJob("RestartUnit", unitName); err != nil {
+		return err
 	}
 	log.Printf("Restarted systemd unit: %s", unitName)
 	return nil
+}
+
+func (m *SystemdManager) runUnitJob(method, unitName string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	signals := make(chan *dbus.Signal, 32)
+	m.conn.Signal(signals)
+	defer m.conn.RemoveSignal(signals)
+	call := m.obj.CallWithContext(ctx, m.iface+"."+method, 0, unitName, "replace")
+	if call.Err != nil {
+		return fmt.Errorf("%s %s: %w", method, unitName, call.Err)
+	}
+	var job dbus.ObjectPath
+	if err := call.Store(&job); err != nil {
+		return fmt.Errorf("parse %s job for %s: %w", method, unitName, err)
+	}
+	for {
+		select {
+		case signal, ok := <-signals:
+			if !ok {
+				return fmt.Errorf("systemd signal channel closed while waiting for %s", unitName)
+			}
+			if signal.Name != m.iface+".JobRemoved" || len(signal.Body) != 4 || signal.Body[1] != job {
+				continue
+			}
+			result, ok := signal.Body[3].(string)
+			if !ok || result != "done" {
+				return fmt.Errorf("%s %s job failed: %v", method, unitName, signal.Body[3])
+			}
+			return nil
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for %s %s: %w", method, unitName, ctx.Err())
+		}
+	}
 }
 
 // GetUnitState returns the state of a systemd unit.
@@ -90,28 +142,17 @@ func (m *SystemdManager) GetUnitState(unitName string) (string, error) {
 
 // EnableTarget switches to a systemd target.
 func (m *SystemdManager) EnableTarget(targetName string) error {
-	// Stop conflicting targets first
-	// This is a simplified approach - in production you'd need to know
-	// which targets to stop
-	if err := m.StopUnit("speakerctld-ap.target"); err != nil && !isUnitNotFoundError(err) {
-		log.Printf("Warning: failed to stop speakerctld-ap.target: %v", err)
+	// Stop the other target before starting the requested target.
+	otherTarget := TargetAP
+	if targetName == TargetAP {
+		otherTarget = TargetWifiClient
 	}
-	if err := m.StopUnit("wifi-client.target"); err != nil && !isUnitNotFoundError(err) {
-		log.Printf("Warning: failed to stop wifi-client.target: %v", err)
+	if err := m.StopUnitIfExists(otherTarget); err != nil {
+		return err
 	}
 
 	// Start the target
 	return m.StartUnit(targetName)
-}
-
-// isUnitNotFoundError checks if an error is due to a unit not being found.
-func isUnitNotFoundError(err error) bool {
-	if err == nil {
-		return false
-	}
-	// Check for common DBus errors indicating unit not found
-	// This is a simplified check - in production you'd check the specific DBus error
-	return true // For now, assume all errors might be "not found"
 }
 
 // Target names for the Speakerctld speaker system
@@ -122,8 +163,8 @@ const (
 
 // Unit names for individual services
 const (
-	UnitHostapd      = "hostapd.service"
-	UnitDnsmasq      = "dnsmasq.service"
+	UnitHostapd       = "hostapd.service"
+	UnitDnsmasq       = "speakerctld-dnsmasq.service"
 	UnitCaptivePortal = "captive-portal.service"
 	UnitWpaSupplicant = "wpa_supplicant.service"
 )

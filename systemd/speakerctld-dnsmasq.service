@@ -1,8 +1,7 @@
 [Unit]
 Description=Speaker DHCP DNS
 
-Requires=speakerctld-hostapd.service
-After=speakerctld-hostapd.service
+PartOf=speakerctld-ap.target
 Conflicts=dnsmasq.service
 
 [Service]

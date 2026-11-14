@@ -1,5 +1,5 @@
 [Unit]
 Description=Speaker AP target
 
-Requires=speakerctld-hostapd.service
 Requires=speakerctld-dnsmasq.service
+After=speakerctld-dnsmasq.service

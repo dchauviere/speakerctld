@@ -1,0 +1,4 @@
+[Unit]
+Description=Speaker Wi-Fi client target
+Requires=NetworkManager.service
+After=NetworkManager.service

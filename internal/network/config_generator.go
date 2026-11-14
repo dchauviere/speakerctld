@@ -1,10 +1,12 @@
 package network
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"text/template"
+	"time"
 
 	"github.com/dchauviere/speakerctld/internal/storage"
 )
@@ -21,14 +23,14 @@ const NetworkInterface = "wlan0"
 // AP Network configuration constants
 const (
 	// FirstBootAP network settings
-	FirstBootAPIP       = "192.168.42.1"
-	FirstBootAPStart    = "192.168.42.100"
-	FirstBootAPEnd      = "192.168.42.200"
-	
+	FirstBootAPIP    = "192.168.42.1"
+	FirstBootAPStart = "192.168.42.100"
+	FirstBootAPEnd   = "192.168.42.200"
+
 	// FallbackAP network settings
-	FallbackAPIP       = "192.168.43.1"
-	FallbackAPStart    = "192.168.43.100"
-	FallbackAPEnd      = "192.168.43.200"
+	FallbackAPIP    = "192.168.43.1"
+	FallbackAPStart = "192.168.43.100"
+	FallbackAPEnd   = "192.168.43.200"
 )
 
 // State represents the speaker state (defined locally to avoid import cycle with state package)
@@ -50,13 +52,13 @@ type DnsmasqConfig struct {
 	DHCPEndAddress   string
 }
 
-// ConfigGenerator generates network configuration files for AP and client modes.
-// For WiFi client mode, it uses NetworkManager via DBus exclusively (no wpa_supplicant fallback).
-// For AP modes, it generates hostapd and dnsmasq configurations.
+// ConfigGenerator configures NetworkManager and generates the dnsmasq configuration.
 type ConfigGenerator struct {
-	storage     storage.Storage
-	runtimeDir string
-	nmManager  *WifiConnectionManager
+	storage             storage.Storage
+	runtimeDir          string
+	nmManager           *WifiConnectionManager
+	wifiInterface       string
+	dnsmasqTemplatePath string
 }
 
 // ConfigGeneratorOption is a functional option for ConfigGenerator
@@ -69,12 +71,19 @@ func WithNetworkManagerClient(client *WifiConnectionManager) ConfigGeneratorOpti
 	}
 }
 
+// WithWifiInterface sets the wireless interface used for the access point.
+func WithWifiInterface(iface string) ConfigGeneratorOption {
+	return func(cg *ConfigGenerator) { cg.wifiInterface = iface }
+}
+
 // NewConfigGenerator creates a new ConfigGenerator.
 // It always uses NetworkManager for WiFi client management.
 func NewConfigGenerator(st storage.Storage, opts ...ConfigGeneratorOption) *ConfigGenerator {
 	cg := &ConfigGenerator{
-		storage:     st,
-		runtimeDir: RuntimeDir,
+		storage:             st,
+		runtimeDir:          RuntimeDir,
+		wifiInterface:       NetworkInterface,
+		dnsmasqTemplatePath: DnsmasqTemplatePath,
 	}
 
 	for _, opt := range opts {
@@ -95,65 +104,34 @@ func NewConfigGenerator(st storage.Storage, opts ...ConfigGeneratorOption) *Conf
 	return cg
 }
 
-// GenerateAPConfigs generates both hostapd and dnsmasq configurations for AP mode.
-// It creates different configurations based on the current state:
-// - FIRSTBOOT_AP: Open AP with Speakerctld-Setup-XXXX SSID
-// - FALLBACK_AP: Secured AP with Speakerctld-Recovery-XXXX SSID
-func (g *ConfigGenerator) GenerateAPConfigs(currentState State, deviceID string) error {
-	// Generate hostapd config
-	if err := g.GenerateHostapdConfig(currentState, deviceID); err != nil {
-		return fmt.Errorf("failed to generate hostapd config: %w", err)
-	}
-	
-	// Generate dnsmasq config
-	if err := g.GenerateDnsmasqConfig(currentState); err != nil {
-		return fmt.Errorf("failed to generate dnsmasq config: %w", err)
-	}
-	
-	return nil
-}
-
-// GenerateHostapdConfig generates the hostapd configuration for AP mode.
-// It creates different configurations based on the current state:
-// - FIRSTBOOT_AP: Open AP with Speakerctld-Setup-XXXX SSID
-// - FALLBACK_AP: Secured AP with Speakerctld-Recovery-XXXX SSID
-func (g *ConfigGenerator) GenerateHostapdConfig(currentState State, deviceID string) error {
-	// Ensure runtime directory exists
-	if err := os.MkdirAll(g.runtimeDir, 0755); err != nil {
-		return fmt.Errorf("failed to create runtime directory: %w", err)
-	}
-
-	configPath := filepath.Join(g.runtimeDir, "hostapd.conf")
-
-	var config string
+// ConfigureAccessPoint activates the AP and assigns its address before dnsmasq starts.
+func (g *ConfigGenerator) ConfigureAccessPoint(currentState State, deviceID string) error {
+	var ssid, password, address string
 	switch currentState {
 	case FirstBootAP:
-		// Open AP for first boot
-		config = g.generateOpenAPConfig(deviceID)
+		ssid, address = "Speakerctld-Setup-"+deviceID, FirstBootAPIP
 	case FallbackAP:
-		// Secured AP for fallback
-		config = g.generateSecuredAPConfig(deviceID)
-	default:
-		// Don't generate hostapd config for non-AP states
-		// Remove existing config if it exists
-		if err := os.Remove(configPath); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to remove hostapd config: %w", err)
+		ssid, address = "Speakerctld-Recovery-"+deviceID, FallbackAPIP
+		reader, ok := g.storage.(interface {
+			LoadDeviceInfo() (*storage.DeviceInfo, error)
+		})
+		if !ok {
+			return fmt.Errorf("storage does not support device information")
 		}
-		return nil
+		info, err := reader.LoadDeviceInfo()
+		if err != nil {
+			return fmt.Errorf("load recovery password: %w", err)
+		}
+		password = "speakerctld-recovery"
+		if info != nil && info.RecoveryPassword != "" {
+			password = info.RecoveryPassword
+		}
+	default:
+		return fmt.Errorf("cannot configure access point for state %s", currentState)
 	}
-
-	// Write atomically
-	tmpPath := configPath + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(config), 0644); err != nil {
-		return fmt.Errorf("failed to write hostapd config: %w", err)
-	}
-
-	// Sync and rename
-	if err := syncAndRename(tmpPath, configPath); err != nil {
-		return err
-	}
-
-	return nil
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	return g.nmManager.client.StartAccessPoint(ctx, g.wifiInterface, ssid, password, address)
 }
 
 // GenerateDnsmasqConfig generates the dnsmasq configuration for AP mode.
@@ -170,14 +148,14 @@ func (g *ConfigGenerator) GenerateDnsmasqConfig(currentState State) error {
 	switch currentState {
 	case FirstBootAP:
 		dnsmasqConfig = DnsmasqConfig{
-			NetworkInterface: NetworkInterface,
+			NetworkInterface: g.wifiInterface,
 			AccessPointIP:    FirstBootAPIP,
 			DHCPStartAddress: FirstBootAPStart,
 			DHCPEndAddress:   FirstBootAPEnd,
 		}
 	case FallbackAP:
 		dnsmasqConfig = DnsmasqConfig{
-			NetworkInterface: NetworkInterface,
+			NetworkInterface: g.wifiInterface,
 			AccessPointIP:    FallbackAPIP,
 			DHCPStartAddress: FallbackAPStart,
 			DHCPEndAddress:   FallbackAPEnd,
@@ -192,7 +170,7 @@ func (g *ConfigGenerator) GenerateDnsmasqConfig(currentState State) error {
 	}
 
 	// Read the template
-	templateContent, err := os.ReadFile(DnsmasqTemplatePath)
+	templateContent, err := os.ReadFile(g.dnsmasqTemplatePath)
 	if err != nil {
 		return fmt.Errorf("failed to read dnsmasq template: %w", err)
 	}
@@ -206,18 +184,18 @@ func (g *ConfigGenerator) GenerateDnsmasqConfig(currentState State) error {
 	// Generate the configuration
 	configPath := filepath.Join(g.runtimeDir, "dnsmasq.conf")
 	tmpPath := configPath + ".tmp"
-	
+
 	file, err := os.Create(tmpPath)
 	if err != nil {
 		return fmt.Errorf("failed to create temp dnsmasq config: %w", err)
 	}
-	
+
 	if err := tmpl.Execute(file, dnsmasqConfig); err != nil {
 		file.Close()
 		os.Remove(tmpPath)
 		return fmt.Errorf("failed to execute dnsmasq template: %w", err)
 	}
-	
+
 	if err := file.Close(); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("failed to close temp file: %w", err)
@@ -229,59 +207,6 @@ func (g *ConfigGenerator) GenerateDnsmasqConfig(currentState State) error {
 	}
 
 	return nil
-}
-
-// generateOpenAPConfig generates configuration for an open AP.
-func (g *ConfigGenerator) generateOpenAPConfig(deviceID string) string {
-	ssid := fmt.Sprintf("Speakerctld-Setup-%s", deviceID)
-	
-	return fmt.Sprintf(`# Hostapd configuration for Speakerctld First Boot AP
-# Generated by speakerctld
-
-interface=wlan0
-driver=nl80211
-ssid=%s
-hw_mode=g
-channel=6
-wmm_enabled=0
-macaddr_acl=0
-auth_algs=1
-ignore_broadcast_ssid=0
-wpa=0
-`, ssid)
-}
-
-// generateSecuredAPConfig generates configuration for a secured AP.
-func (g *ConfigGenerator) generateSecuredAPConfig(deviceID string) string {
-	// Load recovery password from device storage
-	deviceInfo, err := g.storage.(*storage.FileStorage).LoadDeviceInfo()
-	var password string
-	if err == nil && deviceInfo != nil {
-		password = deviceInfo.RecoveryPassword
-	}
-	if password == "" {
-		password = "speakerctld-recovery"
-	}
-	
-	ssid := fmt.Sprintf("Speakerctld-Recovery-%s", deviceID)
-	
-	return fmt.Sprintf(`# Hostapd configuration for Speakerctld Fallback AP
-# Generated by speakerctld
-
-interface=wlan0
-driver=nl80211
-ssid=%s
-hw_mode=g
-channel=11
-wmm_enabled=0
-macaddr_acl=0
-auth_algs=1
-wpa=2
-wpa_passphrase=%s
-wpa_key_mgmt=WPA-PSK
-wpa_pairwise=TKIP
-rsn_pairwise=CCMP
-`, ssid, password)
 }
 
 // ConfigureWifiClient configures WiFi client connection using NetworkManager.

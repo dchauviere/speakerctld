@@ -15,14 +15,13 @@ const (
 	NMInterface     = "org.freedesktop.NetworkManager"
 	NMSettingsIface = "org.freedesktop.NetworkManager.Settings"
 	NMDeviceIface   = "org.freedesktop.NetworkManager.Device"
-	
+
 	// Connection types
 	ConnectionTypeWireless = "802-11-wireless"
-	
+
 	// Wireless security types
-	SecurityTypeNone = "none"
-	SecurityTypeWPA  = "wpa-psk"
-	
+	SecurityTypeWPA = "wpa-psk"
+
 	// Device type constants
 	NMDeviceTypeWifi = uint32(2)
 )
@@ -32,8 +31,8 @@ const ConnectionPrefix = "Speaker-"
 
 // NetworkManagerClient provides high-level access to NetworkManager via DBus
 type NetworkManagerClient struct {
-	conn   *dbus.Conn
-	nmObj  dbus.BusObject
+	conn  *dbus.Conn
+	nmObj dbus.BusObject
 }
 
 // NewNetworkManagerClient creates a new NetworkManager client
@@ -46,10 +45,10 @@ func NewNetworkManagerClient() (*NetworkManagerClient, error) {
 
 	// Get NetworkManager object
 	nmObj := conn.Object(NMService, dbus.ObjectPath(NMPath))
-	
+
 	return &NetworkManagerClient{
-		conn:   conn,
-		nmObj:  nmObj,
+		conn:  conn,
+		nmObj: nmObj,
 	}, nil
 }
 
@@ -71,7 +70,7 @@ func (nmc *NetworkManagerClient) AddWifiConnection(ssid, psk string) error {
 	if err != nil {
 		// Non-critical, continue
 	}
-	
+
 	for _, connPath := range connections {
 		if err := nmc.DeleteConnection(connPath); err != nil {
 			// Non-critical, continue
@@ -82,64 +81,57 @@ func (nmc *NetworkManagerClient) AddWifiConnection(ssid, psk string) error {
 	// Build connection settings as a{sa{sv}}
 	connectionName := fmt.Sprintf("%s%s", ConnectionPrefix, ssid)
 	ssidBytes := []byte(ssid)
-	
+
 	// Settings structure: map[section]map[key]value
-	settings := map[string]map[string]interface{}{
+	settings := map[string]map[string]dbus.Variant{
 		"connection": {
-			"type":        ConnectionTypeWireless,
-			"id":          connectionName,
-			"uuid":        generateUUID(connectionName),
-			"autoconnect": true,
-			"volatile":    true, // Do not save to disk
+			"type":        dbus.MakeVariant(ConnectionTypeWireless),
+			"id":          dbus.MakeVariant(connectionName),
+			"autoconnect": dbus.MakeVariant(true),
 		},
 		"802-11-wireless": {
-			"ssid":    ssidBytes,
-			"mode":    "infrastructure",
-			"hidden":  false,
+			"ssid":   dbus.MakeVariant(ssidBytes),
+			"mode":   dbus.MakeVariant("infrastructure"),
+			"hidden": dbus.MakeVariant(false),
 		},
 		"ipv4": {
-			"method": "auto", // DHCP
+			"method": dbus.MakeVariant("auto"),
 		},
 		"ipv6": {
-			"method":     "auto", // DHCPv6
-			"ip6-privacy": 0,      // RFC 4941 privacy extensions
+			"method":      dbus.MakeVariant("auto"),
+			"ip6-privacy": dbus.MakeVariant(int32(0)),
 		},
 	}
-	
+
 	// Add security settings
 	if psk != "" {
-		settings["802-11-wireless-security"] = map[string]interface{}{
-			"key-mgmt": SecurityTypeWPA,
-			"psk":     psk,
-		}
-	} else {
-		settings["802-11-wireless-security"] = map[string]interface{}{
-			"key-mgmt": SecurityTypeNone,
+		settings["802-11-wireless-security"] = map[string]dbus.Variant{
+			"key-mgmt": dbus.MakeVariant(SecurityTypeWPA),
+			"psk":      dbus.MakeVariant(psk),
 		}
 	}
-	
+
 	// Find wireless device
 	wirelessDevice, err := nmc.findWirelessDevice()
 	if err != nil {
 		return fmt.Errorf("failed to find wireless device: %w", err)
 	}
-	
-	// Call AddAndActivateConnection
-	// Signature: a{sa{sv}} o o -> o o
+
 	var connectionPath dbus.ObjectPath
 	var activePath dbus.ObjectPath
-	
-	call := nmc.nmObj.Call("org.freedesktop.NetworkManager.AddAndActivateConnection", 0,
-		settings, wirelessDevice, dbus.ObjectPath("/"))
-	
+	var result map[string]dbus.Variant
+
+	call := nmc.nmObj.Call("org.freedesktop.NetworkManager.AddAndActivateConnection2", 0,
+		settings, wirelessDevice, dbus.ObjectPath("/"), map[string]dbus.Variant{"persist": dbus.MakeVariant("volatile")})
+
 	if call.Err != nil {
-		return fmt.Errorf("AddAndActivateConnection failed: %w", call.Err)
+		return fmt.Errorf("AddAndActivateConnection2 failed: %w", call.Err)
 	}
-	
-	if err := call.Store(&connectionPath, &activePath); err != nil {
+
+	if err := call.Store(&connectionPath, &activePath, &result); err != nil {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -157,37 +149,37 @@ func (nmc *NetworkManagerClient) DeleteConnection(path dbus.ObjectPath) error {
 func (nmc *NetworkManagerClient) GetConnectionsBySSID(ssid string) ([]dbus.ObjectPath, error) {
 	// Get all connections from Settings
 	settingsObj := nmc.conn.Object(NMService, dbus.ObjectPath("/org/freedesktop/NetworkManager/Settings"))
-	
+
 	var connectionPaths []dbus.ObjectPath
-	
+
 	call := settingsObj.Call("org.freedesktop.NetworkManager.Settings.ListConnections", 0)
 	if call.Err != nil {
 		return nil, fmt.Errorf("failed to list connections: %w", call.Err)
 	}
-	
+
 	if err := call.Store(&connectionPaths); err != nil {
 		return nil, fmt.Errorf("failed to parse connection paths: %w", err)
 	}
-	
+
 	// Filter connections by SSID
 	var matchingPaths []dbus.ObjectPath
 	for _, connPath := range connectionPaths {
 		connObj := nmc.conn.Object(NMService, connPath)
-		
+
 		// Get Settings property
 		var settingsVal interface{}
-		
+
 		propsCall := connObj.Call("org.freedesktop.DBus.Properties.Get", 0,
 			"org.freedesktop.NetworkManager.Settings.Connection", "Settings")
-		
+
 		if propsCall.Err != nil {
 			continue
 		}
-		
+
 		if err := propsCall.Store(&settingsVal); err != nil {
 			continue
 		}
-		
+
 		// Parse settings to get SSID
 		if settingsMap, ok := settingsVal.(map[string]interface{}); ok {
 			// Get wireless settings
@@ -204,7 +196,7 @@ func (nmc *NetworkManagerClient) GetConnectionsBySSID(ssid string) ([]dbus.Objec
 			}
 		}
 	}
-	
+
 	return matchingPaths, nil
 }
 
@@ -212,7 +204,7 @@ func (nmc *NetworkManagerClient) GetConnectionsBySSID(ssid string) ([]dbus.Objec
 func (nmc *NetworkManagerClient) findWirelessDevice() (dbus.ObjectPath, error) {
 	// Get all devices
 	var devicePaths []dbus.ObjectPath
-	
+
 	// Try GetAllDevices first
 	call := nmc.nmObj.Call("org.freedesktop.NetworkManager.GetAllDevices", 0)
 	if call.Err != nil {
@@ -229,31 +221,31 @@ func (nmc *NetworkManagerClient) findWirelessDevice() (dbus.ObjectPath, error) {
 			return "", fmt.Errorf("failed to parse device paths: %w", err)
 		}
 	}
-	
+
 	// Find wireless device
 	for _, devicePath := range devicePaths {
 		deviceObj := nmc.conn.Object(NMService, devicePath)
-		
+
 		// Get DeviceType
 		var deviceType uint32
-		
+
 		propsCall := deviceObj.Call("org.freedesktop.DBus.Properties.Get", 0,
 			"org.freedesktop.NetworkManager.Device", "DeviceType")
-		
+
 		if propsCall.Err != nil {
 			continue
 		}
-		
+
 		if err := propsCall.Store(&deviceType); err != nil {
 			continue
 		}
-		
+
 		// DeviceType 2 is WiFi (from NMDeviceType enum)
 		if deviceType == NMDeviceTypeWifi {
 			return devicePath, nil
 		}
 	}
-	
+
 	return "", fmt.Errorf("no wireless device found")
 }
 
@@ -261,18 +253,18 @@ func (nmc *NetworkManagerClient) findWirelessDevice() (dbus.ObjectPath, error) {
 func (nmc *NetworkManagerClient) RemoveAllSpeakerConnections() error {
 	// Get all connections
 	settingsObj := nmc.conn.Object(NMService, dbus.ObjectPath("/org/freedesktop/NetworkManager/Settings"))
-	
+
 	var connectionPaths []dbus.ObjectPath
-	
+
 	call := settingsObj.Call("org.freedesktop.NetworkManager.Settings.ListConnections", 0)
 	if call.Err != nil {
 		return fmt.Errorf("failed to list connections: %w", call.Err)
 	}
-	
+
 	if err := call.Store(&connectionPaths); err != nil {
 		return fmt.Errorf("failed to parse connection paths: %w", err)
 	}
-	
+
 	// Delete connections that match our naming pattern
 	for _, connPath := range connectionPaths {
 		connObj := nmc.conn.Object(NMService, connPath)
@@ -294,19 +286,8 @@ func (nmc *NetworkManagerClient) RemoveAllSpeakerConnections() error {
 			}
 		}
 	}
-	
-	return nil
-}
 
-// generateUUID creates a simple UUID based on connection name
-func generateUUID(name string) string {
-	// Simple deterministic UUID for consistency
-	hash := uint64(0)
-	for _, c := range name {
-		hash = hash*31 + uint64(c)
-	}
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		hash>>32, hash>>16, hash>>24, hash, hash<<16)
+	return nil
 }
 
 // EnsureNetworkManagerRunning checks if NetworkManager is running and accessible
@@ -320,23 +301,23 @@ func EnsureNetworkManagerRunning() error {
 			log.Printf("Warning: failed to close NetworkManager check D-Bus connection: %v", err)
 		}
 	}()
-	
+
 	// Try to access NetworkManager
 	obj := conn.Object(NMService, dbus.ObjectPath(NMPath))
-	
+
 	// Try to get Version property
 	var version string
 	call := obj.Call("org.freedesktop.DBus.Properties.Get", 0,
 		NMInterface, "Version")
-	
+
 	if call.Err != nil {
 		return fmt.Errorf("NetworkManager not available: %w", call.Err)
 	}
-	
+
 	if err := call.Store(&version); err != nil {
 		return fmt.Errorf("failed to get NetworkManager version: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -351,12 +332,12 @@ func NewWifiConnectionManager() (*WifiConnectionManager, error) {
 	if err := EnsureNetworkManagerRunning(); err != nil {
 		return nil, fmt.Errorf("NetworkManager is not available: %w", err)
 	}
-	
+
 	client, err := NewNetworkManagerClient()
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &WifiConnectionManager{
 		client: client,
 	}, nil
@@ -374,13 +355,13 @@ func (wcm *WifiConnectionManager) Disconnect(ssid string) error {
 	if err != nil {
 		return err
 	}
-	
+
 	for _, connPath := range connections {
 		if err := wcm.client.DeleteConnection(connPath); err != nil {
 			return err
 		}
 	}
-	
+
 	return nil
 }
 
@@ -398,35 +379,35 @@ func (wcm *WifiConnectionManager) Close() {
 func (wcm *WifiConnectionManager) ListConnections() ([]string, error) {
 	// Get all connections
 	settingsObj := wcm.client.conn.Object(NMService, dbus.ObjectPath("/org/freedesktop/NetworkManager/Settings"))
-	
+
 	var connectionPaths []dbus.ObjectPath
-	
+
 	call := settingsObj.Call("org.freedesktop.NetworkManager.Settings.ListConnections", 0)
 	if call.Err != nil {
 		return nil, fmt.Errorf("failed to list connections: %w", call.Err)
 	}
-	
+
 	if err := call.Store(&connectionPaths); err != nil {
 		return nil, fmt.Errorf("failed to parse connection paths: %w", err)
 	}
-	
+
 	var connectionNames []string
 	for _, connPath := range connectionPaths {
 		connObj := wcm.client.conn.Object(NMService, connPath)
-		
+
 		var settingsVal interface{}
-		
+
 		propsCall := connObj.Call("org.freedesktop.DBus.Properties.Get", 0,
 			"org.freedesktop.NetworkManager.Settings.Connection", "Settings")
-		
+
 		if propsCall.Err != nil {
 			continue
 		}
-		
+
 		if err := propsCall.Store(&settingsVal); err != nil {
 			continue
 		}
-		
+
 		if settingsMap, ok := settingsVal.(map[string]interface{}); ok {
 			if connSettings, ok := settingsMap["connection"]; ok {
 				if connMap, ok := connSettings.(map[string]interface{}); ok {
@@ -439,6 +420,6 @@ func (wcm *WifiConnectionManager) ListConnections() ([]string, error) {
 			}
 		}
 	}
-	
+
 	return connectionNames, nil
 }

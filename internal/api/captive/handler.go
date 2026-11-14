@@ -25,9 +25,9 @@ type Handler struct {
 }
 
 // NewHandler creates a new captive portal API handler
-func NewHandler(stateMachine state.StateMachine, storage storage.Storage, 
+func NewHandler(stateMachine state.StateMachine, storage storage.Storage,
 	systemdManager *systemd.SystemdManager, wifiInterface string) (*Handler, error) {
-	
+
 	handler := &Handler{
 		stateMachine:   stateMachine,
 		storage:        storage,
@@ -213,33 +213,14 @@ func (h *Handler) handleWifiConnect(w http.ResponseWriter, r *http.Request) {
 	// Mark device as provisioned
 	h.stateMachine.SetProvisioned()
 
-	// Transition to WIFI_CONNECT state
-	if err := h.stateMachine.Transition(state.WifiConnect); err != nil {
-		log.Printf("Error transitioning to WIFI_CONNECT: %v", err)
-	}
-
-	// Try to connect to WiFi using NetworkManager
-	if h.networkManager != nil {
-		if err := h.networkManager.Connect(request.SSID, request.PSK); err != nil {
-			log.Printf("Warning: NetworkManager connection failed: %v", err)
-		}
-	}
-
-	// Activate wifi-client target to start connection
-	if h.systemdManager != nil {
-		if err := h.systemdManager.EnableTarget(systemd.TargetWifiClient); err != nil {
-			log.Printf("Warning: failed to activate wifi-client target: %v", err)
-		}
-	}
-
-	// Return success
+	// The state monitor stops the AP's DHCP service before activating Wi-Fi.
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"message": "WiFi configuration saved. Connecting to network...",
-		"ssid": request.SSID,
+		"ssid":    request.SSID,
 	})
 }
 

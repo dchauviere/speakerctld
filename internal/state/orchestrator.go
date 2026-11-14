@@ -1,6 +1,7 @@
 package state
 
 import (
+	"errors"
 	"log"
 
 	"github.com/dchauviere/speakerctld/internal/network"
@@ -18,7 +19,7 @@ type Orchestrator struct {
 }
 
 // NewOrchestrator creates a new orchestrator with all required components.
-func NewOrchestrator(st storage.Storage, deviceID string) (*Orchestrator, error) {
+func NewOrchestrator(st storage.Storage, deviceID, wifiInterface string) (*Orchestrator, error) {
 	// Create state machine
 	sm, err := NewStateMachine(st)
 	if err != nil {
@@ -32,9 +33,7 @@ func NewOrchestrator(st storage.Storage, deviceID string) (*Orchestrator, error)
 	}
 
 	// Create config generator
-	configGen := network.NewConfigGenerator(st)
-	// Note: We need to convert state.State to network.State for GenerateHostapdConfig
-	// to avoid import cycle between state and network packages
+	configGen := network.NewConfigGenerator(st, network.WithWifiInterface(wifiInterface))
 
 	return &Orchestrator{
 		stateMachine:    sm,
@@ -63,7 +62,7 @@ func (o *Orchestrator) GetSystemdManager() *systemd.SystemdManager {
 // TransitionTo performs a state transition and updates the system accordingly.
 // This includes:
 // 1. Validating and executing the state transition (unless already in the target state)
-// 2. Generating appropriate configuration files
+// 2. Configuring NetworkManager and generating dnsmasq configuration
 // 3. Starting/stopping systemd targets
 func (o *Orchestrator) TransitionTo(target State) error {
 	// Check if we're already in the target state - if so, just re-apply the setup
@@ -97,32 +96,14 @@ func (o *Orchestrator) TransitionTo(target State) error {
 
 // handleFirstBootAP sets up the first boot access point.
 func (o *Orchestrator) handleFirstBootAP() error {
-	// Generate hostapd and dnsmasq configs for open AP
-	// Convert state.State to network.State
-	currentState := network.State(o.stateMachine.CurrentState())
-	if err := o.configGenerator.GenerateAPConfigs(currentState, o.deviceID); err != nil {
-		return err
-	}
-
-	// Enable ap.target which should start:
-	// - hostapd
-	// - dnsmasq
-	// - captive-portal
-	if err := o.systemdManager.EnableTarget(systemd.TargetAP); err != nil {
-		return err
-	}
-
-	// Clean up client mode config
-	if err := o.configGenerator.CleanupWifiConnections(); err != nil {
-		log.Printf("Warning: failed to cleanup old configs: %v", err)
-	}
-
-	log.Println("First Boot AP mode activated")
-	return nil
+	return o.handleAccessPoint(FirstBootAP)
 }
 
 // handleWifiConnect sets up Wi-Fi client mode.
 func (o *Orchestrator) handleWifiConnect() error {
+	if err := o.stopAccessPointServices(); err != nil {
+		return err
+	}
 	// Configure Wi-Fi client connection using NetworkManager
 	// This replaces the old wpa_supplicant-based configuration
 	if err := o.configGenerator.ConfigureWifiClient(); err != nil {
@@ -155,28 +136,39 @@ func (o *Orchestrator) handleOnline() error {
 
 // handleFallbackAP sets up the fallback access point.
 func (o *Orchestrator) handleFallbackAP() error {
-	// Generate hostapd and dnsmasq configs for secured AP
-	// Convert state.State to network.State
-	currentState := network.State(o.stateMachine.CurrentState())
-	if err := o.configGenerator.GenerateAPConfigs(currentState, o.deviceID); err != nil {
+	return o.handleAccessPoint(FallbackAP)
+}
+
+func (o *Orchestrator) handleAccessPoint(target State) error {
+	if err := o.stopAccessPointServices(); err != nil {
 		return err
 	}
-
-	// Enable ap.target which should start:
-	// - hostapd
-	// - dnsmasq
-	// - captive-portal
-	if err := o.systemdManager.EnableTarget(systemd.TargetAP); err != nil {
-		return err
-	}
-
-	// Clean up client mode config
 	if err := o.configGenerator.CleanupWifiConnections(); err != nil {
-		log.Printf("Warning: failed to cleanup old configs: %v", err)
+		return err
 	}
-
-	log.Println("Fallback AP mode activated")
+	if err := o.configGenerator.GenerateDnsmasqConfig(network.State(target)); err != nil {
+		return err
+	}
+	if err := o.configGenerator.ConfigureAccessPoint(network.State(target), o.deviceID); err != nil {
+		return err
+	}
+	if err := o.systemdManager.EnableTarget(systemd.TargetAP); err != nil {
+		stopErr := o.stopAccessPointServices()
+		cleanupErr := o.configGenerator.CleanupWifiConnections()
+		return errors.Join(err, stopErr, cleanupErr)
+	}
+	log.Printf("%s access point activated", target)
 	return nil
+}
+
+func (o *Orchestrator) stopAccessPointServices() error {
+	if err := o.systemdManager.StopUnit(systemd.TargetAP); err != nil {
+		return err
+	}
+	if err := o.systemdManager.StopUnit(systemd.UnitDnsmasq); err != nil {
+		return err
+	}
+	return o.systemdManager.StopUnitIfExists("speakerctld-hostapd.service")
 }
 
 // CurrentState returns the current state of the orchestrator.
@@ -202,7 +194,14 @@ func (o *Orchestrator) ResetWifiFailures() {
 // IncrementWifiFailures increments the Wi-Fi failure counter.
 // If the threshold is reached, it automatically transitions to FallbackAP.
 func (o *Orchestrator) IncrementWifiFailures() error {
-	return o.stateMachine.IncrementWifiFailures()
+	previous := o.stateMachine.CurrentState()
+	if err := o.stateMachine.IncrementWifiFailures(); err != nil {
+		return err
+	}
+	if previous != FallbackAP && o.stateMachine.CurrentState() == FallbackAP {
+		return o.handleFallbackAP()
+	}
+	return nil
 }
 
 // CanTransitionTo checks if a transition to the target state is possible.

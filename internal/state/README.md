@@ -55,7 +55,7 @@ func main() {
 
 ### Using the Orchestrator
 
-The orchestrator coordinates state transitions with systemd targets and configuration generation:
+The orchestrator coordinates state transitions with NetworkManager, systemd targets, and configuration generation:
 
 ```go
 package main
@@ -70,7 +70,7 @@ func main() {
     st := storage.DefaultFileStorage()
     
     // Create orchestrator
-    orch, err := state.NewOrchestrator(st, "ABCD")
+    orch, err := state.NewOrchestrator(st, "ABCD", "wlan0")
     if err != nil {
         panic(err)
     }
@@ -79,7 +79,7 @@ func main() {
     // Transition to new state
     // This will:
     // 1. Validate and execute the state transition
-    // 2. Generate appropriate configuration files
+    // 2. Configure NetworkManager and generate the dnsmasq configuration
     // 3. Start/stop systemd targets
     err = orch.TransitionTo(state.WifiConnect)
     if err != nil {
@@ -87,6 +87,21 @@ func main() {
     }
 }
 ```
+
+### Access point setup
+
+NetworkManager must manage the selected Wi-Fi interface and support AP mode.
+It activates an ephemeral AP profile and assigns `192.168.42.1/24` for
+FIRSTBOOT_AP or `192.168.43.1/24` for FALLBACK_AP. The first-boot AP remains
+open; the recovery AP uses the stored recovery password.
+
+After NetworkManager reports the AP active, `speakerctld-ap.target` starts
+`speakerctld-dnsmasq.service` for DHCP and captive DNS. Install the updated
+systemd units, including `wifi-client.target`, and the dnsmasq template along
+with the daemon. The former speakerctld hostapd service is no longer used.
+The `-interface` option selects the interface for both the AP and dnsmasq.
+AP activation errors are logged and cause startup to fail, allowing systemd
+to retry. Check the speakerctld and dnsmasq journals if the AP does not start.
 
 ### Handling Network Events
 

@@ -1,7 +1,7 @@
 [Unit]
 Description=Speaker Controller Daemon
-After=network.target systemd-hostnamed.service
-Wants=network.target
+After=NetworkManager.service systemd-hostnamed.service
+Requires=NetworkManager.service
 
 [Service]
 Type=simple
@@ -11,8 +11,7 @@ WorkingDirectory=/var/lib/speakerctld
 Environment="DATA_DIR=/data"
 ExecStart=/usr/bin/speakerctld \
     -interface wlan0 \
-    -captive-port 8080 \
-    -settings-port 8081 \
+    -port 80 \
     -data-dir /data
 
 Restart=on-failure
