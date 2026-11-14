@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"os/signal"
@@ -29,12 +30,12 @@ const DefaultDataDir = "/data"
 
 // SpeakerCtld is the main application that manages the Speakerctld speaker network state.
 type SpeakerCtld struct {
-	orchestrator   orchestrator
-	storage        storage.Storage
-	wifiInterface  string
-	apiServer      *api.Server
-	doneChan       chan struct{}
-	dataDir        string
+	orchestrator  orchestrator
+	storage       storage.Storage
+	wifiInterface string
+	apiServer     *api.Server
+	doneChan      chan struct{}
+	dataDir       string
 }
 
 type orchestrator interface {
@@ -57,7 +58,7 @@ func NewSpeakerCtld(wifiInterface, port, dataDir string) (*SpeakerCtld, error) {
 	deviceID := generateDeviceID()
 
 	// Initialize orchestrator (handles state machine, systemd, and config generation)
-	orchestrator, err := state.NewOrchestrator(st, deviceID)
+	orchestrator, err := state.NewOrchestrator(st, deviceID, wifiInterface)
 	if err != nil {
 		return nil, err
 	}
@@ -78,12 +79,12 @@ func NewSpeakerCtld(wifiInterface, port, dataDir string) (*SpeakerCtld, error) {
 	}
 
 	return &SpeakerCtld{
-		orchestrator:   orchestrator,
-		storage:        st,
-		wifiInterface:  wifiInterface,
-		apiServer:      apiServer,
-		doneChan:       make(chan struct{}),
-		dataDir:        dataDir,
+		orchestrator:  orchestrator,
+		storage:       st,
+		wifiInterface: wifiInterface,
+		apiServer:     apiServer,
+		doneChan:      make(chan struct{}),
+		dataDir:       dataDir,
 	}, nil
 }
 
@@ -108,14 +109,20 @@ func (s *SpeakerCtld) run(ctx context.Context) error {
 		}
 	}
 
-	// Start monitoring goroutine
-	go s.monitorStateAndNetwork(ctx)
-
 	// Initial state sync - make sure systemd targets match current state
 	// This generates configs and activates the appropriate target
 	if err := s.syncSystemdTargetForState(currentState); err != nil {
-		log.Printf("Warning: failed to sync systemd target for initial state: %v", err)
+		if s.apiServer != nil {
+			if stopErr := s.apiServer.Stop(); stopErr != nil {
+				log.Printf("Error stopping API server: %v", stopErr)
+			}
+		}
+		s.orchestrator.Close()
+		return fmt.Errorf("sync systemd target for initial state: %w", err)
 	}
+
+	// Start monitoring after the initial setup has completed.
+	go s.monitorStateAndNetwork(ctx)
 
 	// Wait for shutdown
 	<-ctx.Done()
@@ -294,7 +301,7 @@ func (s *SpeakerCtld) transitionTo(target state.State, reason string) error {
 // This is called on startup to ensure the system is in the expected state.
 func (s *SpeakerCtld) syncSystemdTargetForState(target state.State) error {
 	log.Printf("Syncing systemd target for state: %s", target)
-	
+
 	// Use the Orchestrator to handle state-specific setup
 	// For FIRSTBOOT_AP and FALLBACK_AP, this generates configs and enables the AP target
 	// For WIFI_CONNECT and ONLINE, this enables the wifi-client target
@@ -368,7 +375,7 @@ func generateDeviceID() string {
 		if (iface.Flags&net.FlagLoopback) != 0 || iface.HardwareAddr == nil || len(iface.HardwareAddr) == 0 {
 			continue
 		}
-		
+
 		// Get last 4 bytes of MAC address for unique ID
 		hwAddr := iface.HardwareAddr.String()
 		parts := strings.Split(hwAddr, ":")

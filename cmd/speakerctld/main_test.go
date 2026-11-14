@@ -3,9 +3,11 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -88,6 +90,28 @@ func (o *shutdownOrchestrator) TransitionTo(state.State) error {
 	return nil
 }
 func (o *shutdownOrchestrator) Close() { close(o.closed) }
+
+type failedStartupOrchestrator struct {
+	*shutdownOrchestrator
+}
+
+func (o *failedStartupOrchestrator) TransitionTo(state.State) error {
+	return errors.New("access point unavailable")
+}
+
+func TestRunFailsWhenInitialSetupFails(t *testing.T) {
+	o := &failedStartupOrchestrator{&shutdownOrchestrator{closed: make(chan struct{})}}
+	app := &SpeakerCtld{orchestrator: o}
+	err := app.run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "access point unavailable") {
+		t.Fatalf("expected startup error, got %v", err)
+	}
+	select {
+	case <-o.closed:
+	default:
+		t.Fatal("orchestrator was not closed on startup failure")
+	}
+}
 
 func TestRunStopsAndCleansUpOnCancellation(t *testing.T) {
 	o := &shutdownOrchestrator{synced: make(chan struct{}), closed: make(chan struct{})}

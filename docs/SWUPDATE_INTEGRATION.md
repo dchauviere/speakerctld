@@ -236,8 +236,7 @@ bitbake speakerctld
 ```bash
 speakerctld \
     -interface wlan0 \
-    -captive-port 8080 \
-    -settings-port 8081 \
+    -port 8080 \
     -data-dir /data
 ```
 

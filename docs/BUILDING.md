@@ -321,7 +321,7 @@ make run-dev
 
 # Or manually
 go build -o /tmp/speakerctld ./cmd/speakerctld
-/tmp/speakerctld -interface wlan0 -captive-port 8080 -settings-port 8081 -data-dir /tmp/data
+/tmp/speakerctld -interface wlan0 -port 8080 -data-dir /tmp/data
 ```
 
 ### On Target Device
@@ -342,11 +342,16 @@ journalctl -u speakerctld -f
 
 ### With Systemd
 
-The provided systemd service file (`systemd/speakerctld.service`) can be used:
+Install the provided systemd units and dnsmasq template. NetworkManager must
+manage the selected Wi-Fi interface and support AP mode.
 
 ```bash
-# Install service file
-sudo cp systemd/speakerctld.service /etc/systemd/system/
+# Install units and template
+sudo install -m 644 systemd/speakerctld.service systemd/speakerctld-ap.target \
+    systemd/speakerctld-dnsmasq.service systemd/wifi-client.target /etc/systemd/system/
+sudo install -d /etc/speakerctld
+sudo install -m 644 etc/dnsmasq.conf.gotmpl /etc/speakerctld/
+sudo systemctl daemon-reload
 
 # Enable service
 sudo systemctl enable speakerctld
@@ -362,8 +367,7 @@ sudo systemctl start speakerctld
 ```bash
 speakerctld \
     -interface wlan0 \
-    -captive-port 8080 \
-    -settings-port 8081 \
+    -port 8080 \
     -data-dir /data
 ```
 
