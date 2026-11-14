@@ -123,7 +123,9 @@ func (h *Handler) handleFirmwareUpload(w http.ResponseWriter, r *http.Request) {
 	contentType := r.Header.Get("Content-Type")
 	if strings.HasPrefix(contentType, "multipart/form-data") {
 		// Handle multipart form upload
-		err := r.ParseMultipartForm(10 << 20) // 10MB memory limit
+		// Use maxFileSize as the memory limit for parsing multipart forms
+		// This allows uploading firmware files up to the configured maximum size
+		err := r.ParseMultipartForm(h.maxFileSize)
 		if err != nil {
 			log.Printf("Failed to parse multipart form: %v", err)
 			http.Error(w, fmt.Sprintf("Failed to parse form: %v", err), http.StatusBadRequest)

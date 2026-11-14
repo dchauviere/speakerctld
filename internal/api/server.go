@@ -116,10 +116,10 @@ func (s *Server) Start() error {
 	s.server = &http.Server{
 		Addr:              ":" + s.port,
 		Handler:           mux,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      25 * time.Second,
+		ReadTimeout:       10 * time.Minute,
+		WriteTimeout:      10 * time.Minute,
 		IdleTimeout:       30 * time.Second,
-		ReadHeaderTimeout: 5 * time.Second,
+		ReadHeaderTimeout: 30 * time.Second,
 	}
 
 	// Start single web server
