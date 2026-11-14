@@ -70,8 +70,7 @@ run: deps
 
 # Build for Linux ARM (Raspberry Pi) with CGO
 build-arm: deps
-	GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=1 \
-	CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" \
+	GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 \
 	$(GOBUILD) -o bin/$(BINARY)-arm ./$(SRC_DIR)
 
 # Build for Linux ARM64 with CGO

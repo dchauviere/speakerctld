@@ -27,6 +27,9 @@ type Storage interface {
 // LoadWifiConfig loads the Wi-Fi configuration from storage.
 func LoadWifiConfig() (*WifiConfig, error) {
 	// Default implementation uses FileStorage
+	if config, err := DefaultFileStorage().LoadWifiConfig(); err == nil && config == nil {
+		return &WifiConfig{}, nil
+	}
 	return DefaultFileStorage().LoadWifiConfig()
 }
 
@@ -39,6 +42,9 @@ func SaveWifiConfig(config *WifiConfig) error {
 // LoadSystemState loads the system state from storage.
 func LoadSystemState() (*SystemState, error) {
 	// Default implementation uses FileStorage
+	if state, err := DefaultFileStorage().LoadSystemState(); err == nil && state == nil {
+		return &SystemState{Provisioned: false, State: "FIRSTBOOT_AP", WifiFailureCount: 0}, nil
+	}
 	return DefaultFileStorage().LoadSystemState()
 }
 

@@ -28,23 +28,23 @@ type stateMachine struct {
 // NewStateMachine creates a new state machine with the given storage backend.
 // It loads the initial state from persistent storage.
 func NewStateMachine(storage storage.Storage) (StateMachine, error) {
-	sysState, err := storage.LoadSystemState()
-	if err != nil {
-		// If no state exists, start in FIRSTBOOT_AP
-		return &stateMachine{
-			currentState: FirstBootAP,
-			provisioned:  false,
-			wifiFailures: 0,
-			storage:      storage,
-		}, nil
-	}
+    sysState, err := storage.LoadSystemState()
+    if err != nil || sysState == nil {  // Add check for nil state
+        // If no state exists, start in FIRSTBOOT_AP
+        return &stateMachine{
+            currentState: FirstBootAP,
+            provisioned:  false,
+            wifiFailures: 0,
+            storage:      storage,
+        }, nil
+    }
 
-	return &stateMachine{
-		currentState:   State(sysState.State),
-		provisioned:    sysState.Provisioned,
-		wifiFailures:   sysState.WifiFailureCount,
-		storage:        storage,
-	}, nil
+    return &stateMachine{
+        currentState:   State(sysState.State),
+        provisioned:    sysState.Provisioned,
+        wifiFailures:   sysState.WifiFailureCount,
+        storage:        storage,
+    }, nil
 }
 
 // CurrentState returns the current state of the machine.
