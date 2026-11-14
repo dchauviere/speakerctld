@@ -70,6 +70,9 @@ func (sm *stateMachine) Transition(target State) error {
 	case WifiConnect:
 		// Reset failure count when attempting to connect
 		sm.wifiFailures = 0
+	case Online:
+		// Reset failure count when successfully connected
+		sm.wifiFailures = 0
 	case FallbackAP:
 		// Increment failure count when transitioning to fallback
 		sm.wifiFailures++

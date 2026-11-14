@@ -52,6 +52,11 @@ func (o *Orchestrator) Close() {
 	}
 }
 
+// GetSystemdManager returns the systemd manager instance.
+func (o *Orchestrator) GetSystemdManager() *systemd.SystemdManager {
+	return o.systemdManager
+}
+
 // TransitionTo performs a state transition and updates the system accordingly.
 // This includes:
 // 1. Validating and executing the state transition
@@ -188,4 +193,22 @@ func (o *Orchestrator) ResetWifiFailures() {
 // If the threshold is reached, it automatically transitions to FallbackAP.
 func (o *Orchestrator) IncrementWifiFailures() error {
 	return o.stateMachine.IncrementWifiFailures()
+}
+
+// CanTransitionTo checks if a transition to the target state is possible.
+func (o *Orchestrator) CanTransitionTo(target State) bool {
+	return o.stateMachine.CanTransitionTo(target)
+}
+
+// SetProvisioned marks the device as provisioned.
+// This is called after Wi-Fi configuration is received.
+func (o *Orchestrator) SetProvisioned() {
+	o.stateMachine.SetProvisioned()
+}
+
+// Transition performs a simple state transition without orchestration.
+// This implements the StateMachine interface.
+// For orchestrated transitions with config generation, use TransitionTo() instead.
+func (o *Orchestrator) Transition(target State) error {
+	return o.stateMachine.Transition(target)
 }

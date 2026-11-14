@@ -7,13 +7,13 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/dchauviere/speakerctld/internal/api"
 	"github.com/dchauviere/speakerctld/internal/state"
 	"github.com/dchauviere/speakerctld/internal/storage"
-	"github.com/dchauviere/speakerctld/internal/systemd"
 )
 
 // StateCheckInterval is how often we check and potentially transition state.
@@ -30,9 +30,8 @@ const DefaultDataDir = "/data"
 
 // SpeakerCtld is the main application that manages the Speakerctld speaker network state.
 type SpeakerCtld struct {
-	stateMachine   state.StateMachine
+	orchestrator   *state.Orchestrator
 	storage        storage.Storage
-	systemdManager *systemd.SystemdManager
 	wifiInterface  string
 	apiServer      *api.Server
 	stopChan       chan struct{}
@@ -45,30 +44,25 @@ func NewSpeakerCtld(wifiInterface, port, dataDir string) (*SpeakerCtld, error) {
 	// Initialize storage
 	st := storage.DefaultFileStorage()
 
-	// Initialize state machine
-	sm, err := state.NewStateMachine(st)
-	if err != nil {
-		return nil, err
-	}
-
-	// Initialize systemd manager
-	systemdMgr, err := systemd.NewSystemdManager()
-	if err != nil {
-		log.Printf("Warning: failed to initialize systemd manager: %v", err)
-		// Continue without systemd (might be running in test mode)
-		systemdMgr = nil
-	}
-
 	// Use provided data directory or default
 	if dataDir == "" {
 		dataDir = DefaultDataDir
 	}
 
+	// Generate a device ID from MAC address (for unique AP SSID)
+	deviceID := generateDeviceID()
+
+	// Initialize orchestrator (handles state machine, systemd, and config generation)
+	orchestrator, err := state.NewOrchestrator(st, deviceID)
+	if err != nil {
+		return nil, err
+	}
+
 	// Initialize API server
 	apiServer, err := api.NewServer(
-		sm,
+		orchestrator,
 		st,
-		systemdMgr,
+		orchestrator.GetSystemdManager(),
 		wifiInterface,
 		port,
 		dataDir,
@@ -80,9 +74,8 @@ func NewSpeakerCtld(wifiInterface, port, dataDir string) (*SpeakerCtld, error) {
 	}
 
 	return &SpeakerCtld{
-		stateMachine:   sm,
+		orchestrator:   orchestrator,
 		storage:        st,
-		systemdManager: systemdMgr,
 		wifiInterface:  wifiInterface,
 		apiServer:      apiServer,
 		stopChan:       make(chan struct{}),
@@ -97,9 +90,9 @@ func (s *SpeakerCtld) Run() error {
 	defer cancel()
 
 	// Log initial state
-	currentState := s.stateMachine.CurrentState()
+	currentState := s.orchestrator.CurrentState()
 	log.Printf("Starting speakerctld, current state: %s", currentState)
-	log.Printf("Device provisioned: %v", s.stateMachine.IsProvisioned())
+	log.Printf("Device provisioned: %v", s.orchestrator.IsProvisioned())
 	log.Printf("Monitoring WiFi interface: %s", s.wifiInterface)
 
 	// Start API server
@@ -124,7 +117,10 @@ func (s *SpeakerCtld) Run() error {
 	go s.monitorStateAndNetwork(ctx)
 
 	// Initial state sync - make sure systemd targets match current state
-	s.activateSystemdTargetForState(currentState)
+	// This generates configs and activates the appropriate target
+	if err := s.syncSystemdTargetForState(currentState); err != nil {
+		log.Printf("Warning: failed to sync systemd target for initial state: %v", err)
+	}
 
 	// Wait for shutdown
 	<-s.doneChan
@@ -136,8 +132,8 @@ func (s *SpeakerCtld) Run() error {
 		}
 	}
 
-	if s.systemdManager != nil {
-		s.systemdManager.Close()
+	if s.orchestrator != nil {
+		s.orchestrator.Close()
 	}
 
 	log.Println("Shutting down...")
@@ -167,8 +163,8 @@ func (s *SpeakerCtld) monitorStateAndNetwork(ctx context.Context) {
 // handleStateTransitions checks the current state and network conditions,
 // then performs appropriate state transitions.
 func (s *SpeakerCtld) handleStateTransitions() {
-	currentState := s.stateMachine.CurrentState()
-	isProvisioned := s.stateMachine.IsProvisioned()
+	currentState := s.orchestrator.CurrentState()
+	isProvisioned := s.orchestrator.IsProvisioned()
 
 	log.Printf("[STATE CHECK] Current state: %s, Provisioned: %v", currentState, isProvisioned)
 
@@ -198,11 +194,13 @@ func (s *SpeakerCtld) handleStateTransitions() {
 }
 
 // handleFirstBootAPState handles state transitions from FIRSTBOOT_AP.
+// In this state, we wait for the user to provision the device via the web UI.
+// We only leave this state after provisioning is complete.
 func (s *SpeakerCtld) handleFirstBootAPState(hasCredentials, wifiConnected bool) {
 	// In FIRSTBOOT_AP, we need to be provisioned to leave this state
-	if !s.stateMachine.IsProvisioned() {
-		// Make sure we're in provisioning mode
-		s.ensureProvisioningMode()
+	if !s.orchestrator.IsProvisioned() {
+		// Device is waiting for provisioning - no action needed
+		// The web UI will mark it as provisioned when user configures WiFi
 		return
 	}
 
@@ -212,7 +210,7 @@ func (s *SpeakerCtld) handleFirstBootAPState(hasCredentials, wifiConnected bool)
 		if err := s.transitionTo(state.WifiConnect, "credentials available"); err == nil {
 			// Successfully transitioned to WIFI_CONNECT
 			// Reset failure counter
-			s.stateMachine.ResetWifiFailures()
+			s.orchestrator.ResetWifiFailures()
 		}
 	}
 }
@@ -224,7 +222,7 @@ func (s *SpeakerCtld) handleWifiConnectState(hasCredentials, wifiConnected bool)
 		// Lost credentials, go back to provisioning
 		log.Println("Credentials lost, falling back to FIRSTBOOT_AP")
 		if err := s.transitionTo(state.FirstBootAP, "credentials lost"); err == nil {
-			s.ensureProvisioningMode()
+			// Stay in FIRSTBOOT_AP until user re-provisions
 		}
 		return
 	}
@@ -236,16 +234,16 @@ func (s *SpeakerCtld) handleWifiConnectState(hasCredentials, wifiConnected bool)
 		if err := s.transitionTo(state.Online, "wifi connected"); err == nil {
 			// Successfully online
 			// Reset failure counter
-			s.stateMachine.ResetWifiFailures()
+			s.orchestrator.ResetWifiFailures()
 		}
 	} else {
 		// WiFi not connected, check failure count
-		failures := s.stateMachine.WifiFailureCount()
+		failures := s.orchestrator.WifiFailureCount()
 		log.Printf("WiFi not connected, failure count: %d", failures)
 
 		// Increment failure counter - this may trigger automatic transition to FallbackAP
-		// if threshold is reached (handled in stateMachine.IncrementWifiFailures)
-		if err := s.stateMachine.IncrementWifiFailures(); err != nil {
+		// if threshold is reached (handled in orchestrator)
+		if err := s.orchestrator.IncrementWifiFailures(); err != nil {
 			log.Printf("Error incrementing failure counter: %v", err)
 		}
 	}
@@ -258,7 +256,7 @@ func (s *SpeakerCtld) handleOnlineState(hasCredentials, wifiConnected bool) {
 		log.Println("WiFi disconnected from ONLINE state, transitioning to WIFI_CONNECT")
 		if err := s.transitionTo(state.WifiConnect, "wifi disconnected"); err == nil {
 			// Reset failure counter
-			s.stateMachine.ResetWifiFailures()
+			s.orchestrator.ResetWifiFailures()
 		}
 		return
 	}
@@ -266,23 +264,21 @@ func (s *SpeakerCtld) handleOnlineState(hasCredentials, wifiConnected bool) {
 
 // handleFallbackAPState handles state transitions from FALLBACK_AP.
 func (s *SpeakerCtld) handleFallbackAPState(hasCredentials, wifiConnected bool) {
-	// In FALLBACK_AP mode, we should have AP mode active
-	s.ensureFallbackMode()
-
+	// In FALLBACK_AP mode, we're in AP mode and waiting for user action
 	// Check if we should try to reconnect
 	if hasCredentials {
 		log.Println("Credentials available in FALLBACK_AP, attempting to reconnect")
 		if err := s.transitionTo(state.WifiConnect, "retrying connection"); err == nil {
 			// Reset failure counter when retrying
-			s.stateMachine.ResetWifiFailures()
+			s.orchestrator.ResetWifiFailures()
 		}
 	}
 }
 
 // transitionTo attempts to transition to the target state with a reason.
-// It also activates the appropriate systemd target.
+// It uses the Orchestrator which handles state transition, config generation, and systemd activation.
 func (s *SpeakerCtld) transitionTo(target state.State, reason string) error {
-	currentState := s.stateMachine.CurrentState()
+	currentState := s.orchestrator.CurrentState()
 
 	if currentState == target {
 		log.Printf("Already in state %s", target)
@@ -291,59 +287,34 @@ func (s *SpeakerCtld) transitionTo(target state.State, reason string) error {
 
 	log.Printf("Transitioning from %s to %s: %s", currentState, target, reason)
 
-	// Perform the state transition
-	if err := s.stateMachine.Transition(target); err != nil {
+	// Use the Orchestrator to perform the transition
+	// This handles state validation, config generation, and systemd target activation
+	if err := s.orchestrator.TransitionTo(target); err != nil {
 		log.Printf("State transition failed: %v", err)
 		return err
 	}
 
-	// Activate the appropriate systemd target
-	s.activateSystemdTargetForState(target)
-
 	return nil
 }
 
-// activateSystemdTargetForState activates the appropriate systemd target for a given state.
-func (s *SpeakerCtld) activateSystemdTargetForState(target state.State) {
-	if s.systemdManager == nil {
-		log.Println("Systemd manager not available, skipping target activation")
-		return
-	}
-
-	var targetName string
+// syncSystemdTargetForState syncs the systemd target with the current state.
+// This is called on startup to ensure the system is in the expected state.
+func (s *SpeakerCtld) syncSystemdTargetForState(target state.State) error {
+	log.Printf("Syncing systemd target for state: %s", target)
+	
+	// Use the Orchestrator to handle state-specific setup
+	// For FIRSTBOOT_AP and FALLBACK_AP, this generates configs and enables the AP target
+	// For WIFI_CONNECT and ONLINE, this enables the wifi-client target
 	switch target {
 	case state.FirstBootAP, state.FallbackAP:
-		targetName = systemd.TargetAP
+		// These states need config generation and AP target activation
+		return s.orchestrator.TransitionTo(target)
 	case state.WifiConnect, state.Online:
-		// Online state uses WiFi client target
-		targetName = systemd.TargetWifiClient
+		// These states need wifi-client target activation
+		return s.orchestrator.TransitionTo(target)
 	default:
-		log.Printf("Unknown state for target activation: %s", target)
-		return
-	}
-
-	log.Printf("Activating systemd target: %s", targetName)
-	if err := s.systemdManager.EnableTarget(targetName); err != nil {
-		log.Printf("Error activating target %s: %v", targetName, err)
-	}
-}
-
-// ensureProvisioningMode makes sure the device is in provisioning mode (BLE/Improv active).
-func (s *SpeakerCtld) ensureProvisioningMode() {
-	// Activate ap target which should start BLE/Improv services
-	if s.systemdManager != nil {
-		if err := s.systemdManager.EnableTarget(systemd.TargetAP); err != nil {
-			log.Printf("Error enabling provisioning mode: %v", err)
-		}
-	}
-}
-
-// ensureFallbackMode makes sure the device is in fallback AP mode.
-func (s *SpeakerCtld) ensureFallbackMode() {
-	if s.systemdManager != nil {
-		if err := s.systemdManager.EnableTarget(systemd.TargetAP); err != nil {
-			log.Printf("Error enabling fallback mode: %v", err)
-		}
+		log.Printf("Unknown state for systemd sync: %s", target)
+		return nil
 	}
 }
 
@@ -388,6 +359,33 @@ func (s *SpeakerCtld) isWiFiConnected() bool {
 	}
 
 	return false
+}
+
+// generateDeviceID generates a unique device ID based on MAC address.
+func generateDeviceID() string {
+	// Try to get MAC address from default interface
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		log.Printf("Warning: failed to get network interfaces: %v", err)
+		return "default"
+	}
+
+	for _, iface := range ifaces {
+		// Skip loopback and other non-physical interfaces
+		if (iface.Flags&net.FlagLoopback) != 0 || iface.HardwareAddr == nil || len(iface.HardwareAddr) == 0 {
+			continue
+		}
+		
+		// Get last 4 bytes of MAC address for unique ID
+		hwAddr := iface.HardwareAddr.String()
+		parts := strings.Split(hwAddr, ":")
+		if len(parts) >= 2 {
+			// Use last 4 hex characters of MAC address
+			return strings.ToUpper(parts[len(parts)-2] + parts[len(parts)-1])
+		}
+	}
+
+	return "default"
 }
 
 // Start begins the application and blocks until shutdown.
