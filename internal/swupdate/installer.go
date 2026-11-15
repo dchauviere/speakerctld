@@ -212,6 +212,14 @@ func (c *simpleInstaller) startUpdateInternal(source UpdateSource) {
 		}()
 	}
 
+	// Log file information for debugging
+	fileInfo, err := os.Stat(swuFilePath)
+	if err != nil {
+		log.Printf("Warning: cannot stat SWU file %s: %v", swuFilePath, err)
+	} else {
+		log.Printf("SWUpdate: Starting with file %s, size: %d bytes", swuFilePath, fileInfo.Size())
+	}
+
 	// Update status
 	c.mu.Lock()
 	c.status = StatusRun
@@ -223,20 +231,14 @@ func (c *simpleInstaller) startUpdateInternal(source UpdateSource) {
 	})
 
 	// Build the swupdate command
-	args := []string{"-i", swuFilePath}
+	args := []string{"-v", swuFilePath}
 
 	// Add optional parameters
 	if source.DryRun {
-		args = append(args, "--dry-run")
-	}
-	if source.SoftwareSet != "" {
-		args = append(args, "-s", source.SoftwareSet)
-	}
-	if source.RunningMode != "" {
-		args = append(args, "-r", source.RunningMode)
+		args = append(args, "-d")
 	}
 
-	cmd := exec.Command("swupdate", args...)
+	cmd := exec.Command("swupdate-client", args...)
 	c.cmd = cmd
 
 	// Create context for timeout

@@ -273,13 +273,15 @@ func (h *Handler) handleFirmwareUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate the SWU file
-	if err := ValidateSWUFilePath(source.FilePath); err != nil {
-		log.Printf("Invalid SWU file: %v", err)
-		cleanup()
-		http.Error(w, fmt.Sprintf("Invalid firmware file: %v", err), http.StatusBadRequest)
-		return
+	// Log file info for debugging
+	fileInfo, err := os.Stat(source.FilePath)
+	if err != nil {
+		log.Printf("Warning: cannot stat firmware file: %v", err)
+	} else {
+		log.Printf("Firmware file received: %s, size: %d bytes", source.FilePath, fileInfo.Size())
 	}
+
+	// Note: SWUpdate will validate the file format itself. No need for pre-validation.
 
 	// Subscribe to events
 	eventChan, unsubscribe := h.installer.Subscribe()
@@ -489,40 +491,9 @@ func SaveUploadedFile(r *http.Request, dir string) (*os.File, error) {
 	return tempFile, nil
 }
 
-// ValidateSWUFile validates that a file is a valid SWU file
-// This is a placeholder - actual validation would check the file header
-func ValidateSWUFile(file *os.File) error {
-	// Read first few bytes to check magic
-	buf := make([]byte, 4)
-	n, err := file.Read(buf)
-	if err != nil {
-		return err
-	}
-
-	// Reset file position
-	if _, err := file.Seek(0, 0); err != nil {
-		return err
-	}
-
-	// SWU files typically start with a specific magic
-	// This is a simplified check
-	if n != 4 || buf[0] != 0x53 || buf[1] != 0x57 || buf[2] != 0x55 || buf[3] != 0x0A {
-		return fmt.Errorf("invalid SWU file format")
-	}
-
-	return nil
-}
-
-// ValidateSWUFilePath validates that a file at the given path is a valid SWU file
-func ValidateSWUFilePath(filePath string) error {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return fmt.Errorf("failed to open file: %w", err)
-	}
-	defer file.Close()
-
-	return ValidateSWUFile(file)
-}
+// ValidateSWUFile and ValidateSWUFilePath functions have been removed.
+// SWUpdate itself will validate the file format when processing the update.
+// This is more reliable as SWUpdate knows all valid formats.
 
 // GetFirmwareVersion returns the current firmware version from file
 func GetFirmwareVersion(dir string) (string, error) {
