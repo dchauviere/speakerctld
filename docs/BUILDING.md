@@ -4,6 +4,15 @@
 
 This document describes how to build the Speakerctld application with SWUpdate integration using CGO. It covers development builds, cross-compilation, and Yocto integration.
 
+## Firmware update flow (runtime)
+
+`speakerctld` no longer links against libswupdate nor uses `swupdate-client`. At runtime it needs two commands in `PATH`:
+
+- `swupdate -i <file.swu>` installs the uploaded image (`-n` is added for dry-runs).
+- `swupdate-progress` is run alongside and its output is parsed to report the progress (percentage, step, image) to the UI over the WebSocket. `stdbuf` is used, when available, to line-buffer its output.
+
+When the update succeeds, the daemon deletes the `.swu` file, broadcasts a `firmware_update` event with `reboot: true` and reboots the system through logind (D-Bus). The UI then goes to `/rebooting`, which polls `/api/system/ping` and returns to `/` once the speaker is available again. On failure or dry-run, the file is deleted and no reboot is requested.
+
 ## Prerequisites
 
 ### General Requirements

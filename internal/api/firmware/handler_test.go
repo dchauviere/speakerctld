@@ -238,3 +238,45 @@ func TestHandleFirmwareUpload_FileTooLarge(t *testing.T) {
 		t.Errorf("Expected status %d, got %d: %s", http.StatusRequestEntityTooLarge, rr.Code, rr.Body.String())
 	}
 }
+
+func runUpdateEvents(t *testing.T, dryRun bool, events ...swupdate.UpdateEvent) (rebooted bool, fileExists bool) {
+	t.Helper()
+	file := filepath.Join(t.TempDir(), "fw.swu")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h, _ := NewHandler(&MockStateMachine{}, &MockInstaller{}, t.TempDir())
+	h.rebootDelay = 0
+	h.updateInProgress = true
+	h.reboot = func() error { rebooted = true; return nil }
+
+	ch := make(chan swupdate.UpdateEvent, len(events))
+	for _, e := range events {
+		ch <- e
+	}
+	close(ch)
+	h.processUpdateEvents(ch, func() {}, func() { os.Remove(file) }, dryRun)
+	if h.updateInProgress {
+		t.Error("updateInProgress still set")
+	}
+	_, err := os.Stat(file)
+	return rebooted, err == nil
+}
+
+func TestProcessUpdateEvents_SuccessDeletesFileAndReboots(t *testing.T) {
+	rebooted, exists := runUpdateEvents(t, false, swupdate.UpdateEvent{Type: "completed", Status: swupdate.StatusSuccess})
+	if !rebooted || exists {
+		t.Fatalf("rebooted=%v fileExists=%v, want true/false", rebooted, exists)
+	}
+}
+
+func TestProcessUpdateEvents_FailureOrDryRunDoesNotReboot(t *testing.T) {
+	rebooted, exists := runUpdateEvents(t, false, swupdate.UpdateEvent{Type: "failed", Status: swupdate.StatusFailure})
+	if rebooted || exists {
+		t.Fatalf("failure: rebooted=%v fileExists=%v", rebooted, exists)
+	}
+	rebooted, exists = runUpdateEvents(t, true, swupdate.UpdateEvent{Type: "completed", Status: swupdate.StatusSuccess})
+	if rebooted || exists {
+		t.Fatalf("dry-run: rebooted=%v fileExists=%v", rebooted, exists)
+	}
+}

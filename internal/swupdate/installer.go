@@ -1,6 +1,8 @@
 package swupdate
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,218 +12,155 @@ import (
 	"os/exec"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
-// simpleInstaller implements the Installer interface using a simple system call
+// progressGracePeriod is how long swupdate-progress may keep draining output
+// after swupdate has exited.
+const progressGracePeriod = 2 * time.Second
+
+// simpleInstaller implements the Installer interface by running the
+// swupdate command and following its progress with swupdate-progress.
 type simpleInstaller struct {
 	mu          sync.RWMutex
 	running     int32 // atomic for thread safety
+	cancelled   int32 // atomic, set by CancelUpdate
 	status      UpdateStatus
 	progress    Progress
 	subscribers []chan UpdateEvent
 	closeChan   chan struct{}
 	cmd         *exec.Cmd
+	progressCmd *exec.Cmd
 	ctx         context.Context
 	ctxCancel   context.CancelFunc
 	dataFile    *os.File
-	bytesSent   int64
 	bufferSize  int
-	currentStep int
-	totalSteps  int
 }
 
-// NewInstaller creates a new SWUpdate installer using simple system calls
+// NewInstaller creates a new SWUpdate installer
 func NewInstaller() (Installer, error) {
 	return NewInstallerWithPaths("", "")
 }
 
-// NewInstallerWithPaths creates a new SWUpdate installer (paths are ignored in this implementation)
+// NewInstallerWithPaths creates a new SWUpdate installer (paths are ignored)
 func NewInstallerWithPaths(ctrlSocketPath, progSocketPath string) (Installer, error) {
-	// Check if swupdate command is available
 	if _, err := exec.LookPath("swupdate"); err != nil {
 		return nil, fmt.Errorf("swupdate command not found in PATH: %w", err)
 	}
+	if _, err := exec.LookPath("swupdate-progress"); err != nil {
+		log.Printf("Warning: swupdate-progress not found in PATH, progress will not be reported: %v", err)
+	}
 
-	client := &simpleInstaller{
-		running:    0,
+	return &simpleInstaller{
 		status:     StatusIdle,
 		closeChan:  make(chan struct{}),
 		bufferSize: DefaultBufferSize,
-	}
-
-	return client, nil
+	}, nil
 }
 
 // StartUpdate starts a new update with the given source
 func (c *simpleInstaller) StartUpdate(source UpdateSource) error {
-	if atomic.CompareAndSwapInt32(&c.running, 0, 1) == false {
+	if !atomic.CompareAndSwapInt32(&c.running, 0, 1) {
 		return ErrUpdateInProgress
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			atomic.StoreInt32(&c.running, 0)
-			panic(r)
-		}
-	}()
 
-	// Validate source - we need a file path for the simple implementation
 	if source.Reader == nil && source.FilePath == "" {
 		atomic.StoreInt32(&c.running, 0)
 		return ErrNoUpdateFile
 	}
 
+	atomic.StoreInt32(&c.cancelled, 0)
 	c.mu.Lock()
 	c.status = StatusStart
-	c.progress = Progress{}
-	c.currentStep = 0
-	c.totalSteps = 0
+	c.progress = Progress{Status: StatusStart}
 	c.mu.Unlock()
-	c.notifySubscribers(UpdateEvent{
-		Type:   "started",
-		Status: StatusStart,
-	})
+	c.notifySubscribers(UpdateEvent{Type: "started", Status: StatusStart})
 
-	// Start the update in a goroutine
 	go c.startUpdateInternal(source)
-
 	return nil
 }
 
-// startUpdateInternal does the actual update work using swupdate command
+// fail records a failure and notifies subscribers.
+func (c *simpleInstaller) fail(err error) {
+	c.mu.Lock()
+	c.status = StatusFailure
+	c.progress.Status = StatusFailure
+	c.progress.Message = err.Error()
+	c.mu.Unlock()
+	c.notifySubscribers(UpdateEvent{
+		Type:    "failed",
+		Status:  StatusFailure,
+		Error:   err,
+		Message: err.Error(),
+	})
+}
+
+// saveReader copies the reader to a temporary .swu file.
+func (c *simpleInstaller) saveReader(src interface{}) (string, error) {
+	reader, ok := src.(io.Reader)
+	if !ok {
+		return "", errors.New("reader must implement io.Reader")
+	}
+	tempFile, err := os.CreateTemp("", "swupdate-*.swu")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+	if _, err := io.CopyBuffer(tempFile, reader, make([]byte, c.bufferSize)); err != nil {
+		tempFile.Close()
+		os.Remove(tempFile.Name())
+		return "", fmt.Errorf("failed to save update data: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		os.Remove(tempFile.Name())
+		return "", fmt.Errorf("failed to close temp file: %w", err)
+	}
+	c.mu.Lock()
+	c.dataFile = tempFile
+	c.mu.Unlock()
+	return tempFile.Name(), nil
+}
+
+// startUpdateInternal runs `swupdate -i <file>` and follows swupdate-progress.
 func (c *simpleInstaller) startUpdateInternal(source UpdateSource) {
-	defer func() {
-		atomic.StoreInt32(&c.running, 0)
-		c.mu.Lock()
-		c.status = StatusDone
-		c.mu.Unlock()
-		c.notifySubscribers(UpdateEvent{
-			Type:   "completed",
-			Status: StatusDone,
-		})
-	}()
+	defer atomic.StoreInt32(&c.running, 0)
 
-	var swuFilePath string
-	var cleanupFile bool
-
-	// If we have a file path, use it directly
-	if source.FilePath != "" {
-		swuFilePath = source.FilePath
-		cleanupFile = false
-	} else if source.Reader != nil {
-		// If we have a reader, save it to a temp file
-		if reader, ok := source.Reader.(io.Reader); ok {
-			tempFile, err := os.CreateTemp("", "swupdate-*.swu")
-			if err != nil {
-				c.mu.Lock()
-				c.status = StatusFailure
-				c.mu.Unlock()
-				c.notifySubscribers(UpdateEvent{
-					Type:    "failed",
-					Status:  StatusFailure,
-					Error:   fmt.Errorf("failed to create temp file: %w", err),
-					Message: fmt.Sprintf("Failed to create temp file: %v", err),
-				})
-				return
-			}
-
-			// Copy data from reader to temp file
-			buf := make([]byte, c.bufferSize)
-			for {
-				n, err := reader.Read(buf)
-				if err != nil && !errors.Is(err, io.EOF) {
-					c.mu.Lock()
-					c.status = StatusFailure
-					c.mu.Unlock()
-					c.notifySubscribers(UpdateEvent{
-						Type:    "failed",
-						Status:  StatusFailure,
-						Error:   fmt.Errorf("failed to read data: %w", err),
-						Message: fmt.Sprintf("Read error: %v", err),
-					})
-					tempFile.Close()
-					os.Remove(tempFile.Name())
-					return
-				}
-
-				if n > 0 {
-					if _, err := tempFile.Write(buf[:n]); err != nil {
-						c.mu.Lock()
-						c.status = StatusFailure
-						c.mu.Unlock()
-						c.notifySubscribers(UpdateEvent{
-							Type:    "failed",
-							Status:  StatusFailure,
-							Error:   fmt.Errorf("failed to write temp file: %w", err),
-							Message: fmt.Sprintf("Write error: %v", err),
-						})
-						tempFile.Close()
-						os.Remove(tempFile.Name())
-						return
-					}
-					c.bytesSent += int64(n)
-				}
-
-				if err != nil && errors.Is(err, io.EOF) {
-					break
-				}
-			}
-
-			// Close and keep the temp file
-			if err := tempFile.Close(); err != nil {
-				c.mu.Lock()
-				c.status = StatusFailure
-				c.mu.Unlock()
-				c.notifySubscribers(UpdateEvent{
-					Type:    "failed",
-					Status:  StatusFailure,
-					Error:   fmt.Errorf("failed to close temp file: %w", err),
-					Message: fmt.Sprintf("Close error: %v", err),
-				})
-				os.Remove(tempFile.Name())
-				return
-			}
-
-			swuFilePath = tempFile.Name()
-			cleanupFile = true
-			c.dataFile = tempFile
-		} else {
-			atomic.StoreInt32(&c.running, 0)
-			c.mu.Lock()
-			c.status = StatusFailure
-			c.mu.Unlock()
-			c.notifySubscribers(UpdateEvent{
-				Type:    "failed",
-				Status:  StatusFailure,
-				Error:   fmt.Errorf("reader must implement io.Reader"),
-				Message: "Reader must implement io.Reader",
-			})
+	swuFilePath := source.FilePath
+	if swuFilePath == "" {
+		path, err := c.saveReader(source.Reader)
+		if err != nil {
+			c.fail(err)
 			return
 		}
-	}
-
-	// Defer cleanup of temp file
-	if cleanupFile {
+		swuFilePath = path
 		defer func() {
-			if c.dataFile != nil {
-				c.dataFile.Close()
-				os.Remove(c.dataFile.Name())
-				c.dataFile = nil
-			}
+			c.mu.Lock()
+			os.Remove(path)
+			c.dataFile = nil
+			c.mu.Unlock()
 		}()
 	}
 
-	// Log file information for debugging
-	fileInfo, err := os.Stat(swuFilePath)
-	if err != nil {
+	if info, err := os.Stat(swuFilePath); err != nil {
 		log.Printf("Warning: cannot stat SWU file %s: %v", swuFilePath, err)
 	} else {
-		log.Printf("SWUpdate: Starting with file %s, size: %d bytes", swuFilePath, fileInfo.Size())
+		log.Printf("SWUpdate: starting with file %s, size: %d bytes", swuFilePath, info.Size())
 	}
 
-	// Update status
+	args := []string{"-i", swuFilePath}
+	if source.DryRun {
+		args = append(args, "-n")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "swupdate", args...)
+	cmd.Stdout = logWriter{prefix: "swupdate"}
+	cmd.Stderr = logWriter{prefix: "swupdate"}
+	cmd.WaitDelay = time.Second
+
 	c.mu.Lock()
+	c.ctx, c.ctxCancel = ctx, cancel
+	c.cmd = cmd
 	c.status = StatusRun
 	c.mu.Unlock()
 	c.notifySubscribers(UpdateEvent{
@@ -230,92 +169,136 @@ func (c *simpleInstaller) startUpdateInternal(source UpdateSource) {
 		Message: fmt.Sprintf("Starting swupdate with file: %s", swuFilePath),
 	})
 
-	// Build the swupdate command
-	args := []string{"-v", swuFilePath}
-
-	// Add optional parameters
-	if source.DryRun {
-		args = append(args, "-d")
-	}
-
-	cmd := exec.Command("swupdate-client", args...)
-	c.cmd = cmd
-
-	// Create context for timeout
-	c.ctx, c.ctxCancel = context.WithCancel(context.Background())
-	defer c.ctxCancel()
-
-	// Start the command
 	if err := cmd.Start(); err != nil {
-		c.mu.Lock()
-		c.status = StatusFailure
-		c.mu.Unlock()
-		c.notifySubscribers(UpdateEvent{
-			Type:    "failed",
-			Status:  StatusFailure,
-			Error:   fmt.Errorf("failed to start swupdate: %w", err),
-			Message: fmt.Sprintf("Failed to start swupdate: %v", err),
-		})
+		c.fail(fmt.Errorf("failed to start swupdate: %w", err))
 		return
 	}
 
-	// Notify that update is running
-	c.mu.Lock()
-	c.status = StatusRun
-	c.mu.Unlock()
-	c.notifySubscribers(UpdateEvent{
-		Type:   "progress",
-		Status: StatusRun,
-		Progress: &Progress{
-			Status:       StatusRun,
-			CurrentImage: swuFilePath,
-			Message:      "Update in progress",
-		},
-	})
+	progressDone, outcome := c.followProgress(ctx)
 
-	// Wait for the command to complete
-	// Use a goroutine to wait for completion and monitor
-	go c.monitorCommand(cmd, swuFilePath)
-}
+	waitErr := cmd.Wait()
 
-// monitorCommand monitors the swupdate command and updates status
-func (c *simpleInstaller) monitorCommand(cmd *exec.Cmd, swuFilePath string) {
-	// Wait for command completion
-	err := cmd.Wait()
+	// Let swupdate-progress drain its last lines, then stop it.
+	select {
+	case <-progressDone:
+	case <-time.After(progressGracePeriod):
+	}
+	cancel()
+	<-progressDone
 
-	c.mu.Lock()
-	var event UpdateEvent
-	if err != nil {
-		// Command failed
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			status := exitErr.Sys().(syscall.WaitStatus)
-			c.status = StatusFailure
-			event = UpdateEvent{
-				Type:    "failed",
-				Status:  StatusFailure,
-				Error:   fmt.Errorf("swupdate failed with exit code %d", status.ExitStatus()),
-				Message: fmt.Sprintf("SWUpdate failed with exit code %d", status.ExitStatus()),
-			}
+	if atomic.LoadInt32(&c.cancelled) == 1 {
+		return
+	}
+
+	switch {
+	case waitErr != nil:
+		var exitErr *exec.ExitError
+		if errors.As(waitErr, &exitErr) {
+			c.fail(fmt.Errorf("swupdate failed with exit code %d", exitErr.ExitCode()))
 		} else {
-			c.status = StatusFailure
-			event = UpdateEvent{
-				Type:    "failed",
-				Status:  StatusFailure,
-				Error:   fmt.Errorf("swupdate failed: %w", err),
-				Message: fmt.Sprintf("SWUpdate failed: %v", err),
-			}
+			c.fail(fmt.Errorf("swupdate failed: %w", waitErr))
 		}
-	} else {
-		// Command succeeded
+	case atomic.LoadInt32(outcome) == int32(outcomeFailure):
+		c.fail(errors.New("swupdate reported a failure"))
+	default:
+		c.mu.Lock()
 		c.status = StatusSuccess
-		event = UpdateEvent{
+		c.progress.Status = StatusSuccess
+		c.progress.StepPercent = 100
+		c.progress.Message = "Update completed successfully"
+		c.mu.Unlock()
+		c.notifySubscribers(UpdateEvent{
 			Type:    "completed",
 			Status:  StatusSuccess,
 			Message: "Update completed successfully",
-		}
+		})
 	}
+}
+
+// followProgress runs swupdate-progress and publishes the progress it reports.
+// The returned channel is closed once the output has been fully consumed; the
+// returned value holds the terminal outcome seen in the output.
+func (c *simpleInstaller) followProgress(ctx context.Context) (<-chan struct{}, *int32) {
+	done := make(chan struct{})
+	outcome := new(int32)
+
+	path, err := exec.LookPath("swupdate-progress")
+	if err != nil {
+		close(done)
+		return done, outcome
+	}
+
+	// Line-buffer the output so progress is reported while the update runs.
+	name, args := path, []string{}
+	if stdbuf, err := exec.LookPath("stdbuf"); err == nil {
+		name, args = stdbuf, []string{"-oL", "-eL", path}
+	}
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stderr = logWriter{prefix: "swupdate-progress"}
+	cmd.WaitDelay = time.Second
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		log.Printf("Warning: swupdate-progress stdout: %v", err)
+		close(done)
+		return done, outcome
+	}
+	if err := cmd.Start(); err != nil {
+		log.Printf("Warning: failed to start swupdate-progress: %v", err)
+		close(done)
+		return done, outcome
+	}
+	c.mu.Lock()
+	c.progressCmd = cmd
 	c.mu.Unlock()
-	c.notifySubscribers(event)
+
+	// Closing the pipe unblocks the scanner if a child process keeps it open.
+	go func() {
+		<-ctx.Done()
+		stdout.Close()
+	}()
+
+	go func() {
+		defer close(done)
+		scanner := newProgressScanner(bufio.NewScanner(stdout))
+		for scanner.Scan() {
+			c.handleProgressLine(scanner.Text(), outcome)
+		}
+		cmd.Wait()
+	}()
+	return done, outcome
+}
+
+func (c *simpleInstaller) handleProgressLine(line string, outcome *int32) {
+	c.mu.Lock()
+	p := c.progress
+	changed, out := parseProgressLine(line, &p)
+	if !changed {
+		c.mu.Unlock()
+		return
+	}
+	if out == outcomeFailure {
+		atomic.StoreInt32(outcome, int32(outcomeFailure))
+	} else if out == outcomeSuccess {
+		// Success is only final once swupdate itself exits cleanly.
+		p.Status = StatusRun
+		atomic.CompareAndSwapInt32(outcome, int32(outcomeNone), int32(outcomeSuccess))
+	}
+	p.Source = SourceLocal
+	c.progress = p
+	c.mu.Unlock()
+	log.Printf("swupdate-progress: %s", line)
+	if out == outcomeFailure {
+		return
+	}
+	c.notifySubscribers(UpdateEvent{Type: "progress", Status: StatusRun, Progress: &p})
+}
+
+// logWriter forwards process output to the log.
+type logWriter struct{ prefix string }
+
+func (w logWriter) Write(b []byte) (int, error) {
+	log.Printf("%s: %s", w.prefix, string(bytes.TrimRight(b, "\r\n")))
+	return len(b), nil
 }
 
 // SendData is not used in simple implementation (data is sent via file)
@@ -335,7 +318,7 @@ func (c *simpleInstaller) CancelUpdate() error {
 		return nil
 	}
 
-	// Try to cancel the context
+	atomic.StoreInt32(&c.cancelled, 1)
 	if c.ctxCancel != nil {
 		c.ctxCancel()
 	}
@@ -377,19 +360,7 @@ func (c *simpleInstaller) GetProgress() Progress {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	// For simple implementation, we don't have real progress
-	// We can simulate some progress based on status
 	progress := c.progress
-	if c.status == StatusRun {
-		progress.Status = StatusRun
-		progress.Message = "Update in progress"
-		// Simulate some progress
-		if c.totalSteps > 0 {
-			progress.TotalSteps = c.totalSteps
-			progress.CurrentStep = c.currentStep
-		}
-	}
-
 	return progress
 }
 

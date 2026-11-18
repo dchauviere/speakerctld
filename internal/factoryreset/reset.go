@@ -1,7 +1,6 @@
 package factoryreset
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -9,9 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
-	"github.com/godbus/dbus/v5"
+	"github.com/dchauviere/speakerctld/internal/systemd"
 )
 
 const markerName = ".speakerctld-factory-reset"
@@ -184,18 +182,8 @@ func syncDirectory(path string) error {
 }
 
 func requestReboot() error {
-	conn, err := dbus.ConnectSystemBus()
-	if err != nil {
-		return fmt.Errorf("connect to D-Bus for reboot: %w", err)
-	}
-	defer conn.Close()
-	log.Print("Requesting reboot via logind D-Bus")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	call := conn.Object("org.freedesktop.login1", "/org/freedesktop/login1").
-		CallWithContext(ctx, "org.freedesktop.login1.Manager.Reboot", 0, false)
-	if call.Err != nil {
-		return fmt.Errorf("request reboot via logind: %w", call.Err)
+	if err := systemd.Reboot(); err != nil {
+		return err
 	}
 	// Do not start the daemon again while the reboot is pending.
 	return errors.New("factory reset reboot requested")

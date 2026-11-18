@@ -329,6 +329,7 @@ type StatusEvent struct {
 // CompletedEvent represents an update completion event
 type CompletedEvent struct {
 	Success bool   `json:"success"`
+	Reboot  bool   `json:"reboot,omitempty"`
 	Message string `json:"message"`
 	Duration string `json:"duration,omitempty"`
 }

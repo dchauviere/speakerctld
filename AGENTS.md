@@ -29,8 +29,16 @@ Go-based Manager
 ├── internal/systemd
 ├── internal/storage
 ├── internal/provisioning
+├── internal/swupdate
+├── internal/factoryreset
 └── internal/ui
 ```
+
+## Firmware Update
+
+- `internal/swupdate` runs `swupdate -i <fichier.swu>` (jamais `swupdate-client`) et suit la progression via `swupdate-progress` (sortie parsée dans `progress.go`). Ces deux commandes sont l'exception à la règle « pas de commandes système » : elles n'ont pas d'interface DBus.
+- `internal/api/firmware` : après succès (hors dry-run), le fichier `.swu` est supprimé puis le reboot est demandé via DBus logind (`systemd.Reboot()`, partagé avec `internal/factoryreset`). Le fichier est aussi supprimé en cas d'échec.
+- UI : l'évènement WebSocket `firmware_update` avec `reboot: true` redirige vers `/rebooting` (page autonome, `internal/ui/settings/rebooting.html`) qui interroge `/api/system/ping` et revient sur `/` quand l'enceinte répond de nouveau.
 
 # Implementation Plan
 

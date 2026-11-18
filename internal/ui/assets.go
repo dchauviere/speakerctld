@@ -8,7 +8,7 @@ import (
 //go:embed captive/index.html captive/captive.css captive/captive.js
 var captiveAssets embed.FS
 
-//go:embed settings/index.html settings/settings.css settings/settings.js
+//go:embed settings/index.html settings/rebooting.html settings/settings.css settings/settings.js
 var settingsAssets embed.FS
 
 // CaptiveAssets returns the embedded filesystem for captive portal assets

@@ -184,13 +184,15 @@ function initWebSocket() {
             if (data.type === 'firmware_progress') {
                 handleFirmwareProgress(data.payload);
             } else if (data.type === 'firmware_update') {
-                handleFirmwareUpdate(data.payload);
+                if (data.payload.success === true) {
+                    handleFirmwareComplete(data.payload);
+                } else if (data.payload.error) {
+                    handleFirmwareFailed(data.payload);
+                } else {
+                    handleFirmwareUpdate(data.payload);
+                }
             } else if (data.type === 'firmware_status') {
                 handleFirmwareStatus(data.payload);
-            } else if (data.type === 'firmware_update' && data.payload.success === true) {
-                handleFirmwareComplete(data.payload);
-            } else if (data.type === 'firmware_update' && data.payload.success === false) {
-                handleFirmwareFailed(data.payload);
             }
         };
         
@@ -215,6 +217,10 @@ function handleFirmwareProgress(progress) {
     firmwareUpdateState.currentStatus = progress.status;
     
     // Update progress bar
+    const progressContainer = document.getElementById('firmware-progress-container');
+    if (progressContainer) {
+        progressContainer.classList.remove('hidden');
+    }
     const progressBar = document.getElementById('firmware-progress-bar');
     const progressText = document.getElementById('firmware-progress-text');
     const progressPercent = document.getElementById('firmware-progress-percent');
@@ -224,7 +230,11 @@ function handleFirmwareProgress(progress) {
     }
     
     if (progressText) {
-        progressText.textContent = progress.message || 'Mise à jour en cours...';
+        let text = progress.message || 'Mise à jour en cours...';
+        if (progress.total_steps > 0) {
+            text = 'Étape ' + progress.current_step + '/' + progress.total_steps + ' - ' + text;
+        }
+        progressText.textContent = text;
     }
     
     if (progressPercent) {
@@ -248,8 +258,21 @@ function handleFirmwareStatus(status) {
     }
 }
 
+// Show the reboot landing page, which polls until the speaker is back
+function redirectToRebooting() {
+    if (firmwareUpdateState.rebooting) {
+        return;
+    }
+    firmwareUpdateState.rebooting = true;
+    window.location.href = '/rebooting';
+}
+
 // Handle firmware update completion
 function handleFirmwareComplete(payload) {
+    if (payload.reboot) {
+        redirectToRebooting();
+        return;
+    }
     firmwareUpdateState.uploadInProgress = false;
     firmwareUpdateState.currentProgress = 100;
     firmwareUpdateState.currentStatus = 'success';
@@ -448,8 +471,15 @@ function getFirmwareStatus() {
     .then(response => response.json())
     .then(data => {
         console.log('Firmware status:', data);
+        const wasInProgress = firmwareUpdateState.uploadInProgress;
         firmwareUpdateState.currentStatus = data.status;
         firmwareUpdateState.uploadInProgress = data.is_running || data.in_progress;
+
+        // Fallback if the completion event was missed on the WebSocket
+        if (wasInProgress && data.status === 'success' && !data.is_running) {
+            redirectToRebooting();
+            return;
+        }
         
         if (data.is_running || data.in_progress) {
             // Update is in progress, show status

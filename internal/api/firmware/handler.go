@@ -10,13 +10,20 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/dchauviere/speakerctld/internal/state"
 	"github.com/dchauviere/speakerctld/internal/swupdate"
+	"github.com/dchauviere/speakerctld/internal/systemd"
 )
 
 // DefaultMaxFileSize is the default maximum firmware file size (500MB)
 const DefaultMaxFileSize = 500 * 1024 * 1024
+
+// defaultRebootDelay leaves time for the UI to receive the completion event
+// before the system goes down.
+const defaultRebootDelay = 3 * time.Second
 
 // Handler handles HTTP requests for firmware update operations
 type Handler struct {
@@ -25,6 +32,8 @@ type Handler struct {
 	dataDir          string
 	maxFileSize      int64
 	updateInProgress bool
+	reboot           func() error
+	rebootDelay      time.Duration
 }
 
 // HandlerOptions contains configuration options for the firmware handler
@@ -50,6 +59,8 @@ func NewHandlerWithOptions(stateMachine state.StateMachine, installer swupdate.I
 		dataDir:          dataDir,
 		maxFileSize:      maxFileSize,
 		updateInProgress: false,
+		reboot:           systemd.Reboot,
+		rebootDelay:      defaultRebootDelay,
 	}, nil
 }
 
@@ -105,8 +116,12 @@ func (h *Handler) handleFirmwareUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.updateInProgress = true
+	started := false
 	defer func() {
-		h.updateInProgress = false
+		// Once started, processUpdateEvents owns the flag until the update ends.
+		if !started {
+			h.updateInProgress = false
+		}
 	}()
 
 	// Parse query parameters
@@ -283,51 +298,73 @@ func (h *Handler) handleFirmwareUpload(w http.ResponseWriter, r *http.Request) {
 
 	// Note: SWUpdate will validate the file format itself. No need for pre-validation.
 
-	// Subscribe to events
+	// Subscribe to events; processUpdateEvents unsubscribes when the update ends
 	eventChan, unsubscribe := h.installer.Subscribe()
-	defer unsubscribe()
-
-	// Start a goroutine to process events
-	go h.processUpdateEvents(eventChan, cleanup)
+	go h.processUpdateEvents(eventChan, unsubscribe, cleanup, dryRun)
 
 	// Start the update
 	if err := h.installer.StartUpdate(source); err != nil {
 		log.Printf("Failed to start update: %v", err)
+		unsubscribe()
 		cleanup()
 		http.Error(w, fmt.Sprintf("Failed to start update: %v", err), http.StatusInternalServerError)
 		return
 	}
+	started = true
 
 	// Return early - the update is running in the background
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":      "started",
-		"message":     "Firmware update started",
-		"dry_run":     dryRun,
+		"status":       "started",
+		"message":      "Firmware update started",
+		"dry_run":      dryRun,
 		"software_set": softwareSet,
-		"file_path":   source.FilePath,
+		"file_path":    source.FilePath,
 	})
 }
 
-// processUpdateEvents processes update events and sends them to WebSocket clients
-func (h *Handler) processUpdateEvents(eventChan <-chan swupdate.UpdateEvent, cleanup func()) {
-	// Process events and forward them via WebSocket
-	// The cleanup function will be called when update completes or fails
+// processUpdateEvents waits for the end of the update. The uploaded file is
+// always deleted; after a successful (non dry-run) update the system is
+// rebooted through D-Bus.
+func (h *Handler) processUpdateEvents(eventChan <-chan swupdate.UpdateEvent, unsubscribe func(), cleanup func(), dryRun bool) {
+	var once sync.Once
+	finish := func() {
+		once.Do(func() {
+			unsubscribe()
+			if cleanup != nil {
+				cleanup()
+			}
+			h.updateInProgress = false
+		})
+	}
+	defer finish()
 
 	for event := range eventChan {
 		log.Printf("Update event: type=%s, status=%s, message=%s", event.Type, event.Status.String(), event.Message)
 
-		// Check if update completed or failed
-		if event.Type == "completed" || event.Type == "failed" {
-			log.Printf("Update finished with status: %s", event.Status.String())
-			// Clean up temp files
-			if cleanup != nil {
-				cleanup()
+		switch {
+		case event.Type == "completed":
+			finish()
+			if dryRun {
+				log.Print("Dry-run update completed, not rebooting")
+				return
 			}
+			h.rebootAfterUpdate()
+			return
+		case event.Type == "failed", event.Type == "status" && event.Status == swupdate.StatusIdle:
+			log.Printf("Update finished with status: %s", event.Status.String())
 			return
 		}
+	}
+}
+
+// rebootAfterUpdate reboots the system once the UI has been notified.
+func (h *Handler) rebootAfterUpdate() {
+	time.Sleep(h.rebootDelay)
+	if err := h.reboot(); err != nil {
+		log.Printf("Failed to reboot after firmware update: %v", err)
 	}
 }
 

@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Speakerctld - Redémarrage</title>
+    <style>
+        body { font-family: system-ui, sans-serif; background: #f4f5f7; color: #222; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+        .box { background: #fff; padding: 2rem 2.5rem; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,.1); text-align: center; max-width: 24rem; }
+        .spinner { width: 3rem; height: 3rem; margin: 0 auto 1rem; border: 4px solid #ddd; border-top-color: #3b6fd4; border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <main class="box" role="status" aria-live="polite">
+        <div class="spinner" aria-hidden="true"></div>
+        <h1>Redémarrage en cours…</h1>
+        <p id="message">La mise à jour est terminée. L'enceinte redémarre, cette page se rechargera automatiquement.</p>
+    </main>
+    <script>
+        (function () {
+            var POLL_INTERVAL_MS = 3000;
+            var MIN_WAIT_MS = 15000;   // the speaker may still answer just before it goes down
+            var started = Date.now();
+            var wentDown = false;
+
+            function ping() {
+                var controller = new AbortController();
+                var timer = setTimeout(function () { controller.abort(); }, 2500);
+                return fetch('/api/system/ping', { cache: 'no-store', signal: controller.signal })
+                    .then(function (r) { return r.ok; })
+                    .catch(function () { return false; })
+                    .then(function (ok) { clearTimeout(timer); return ok; });
+            }
+
+            function poll() {
+                ping().then(function (up) {
+                    if (!up) {
+                        wentDown = true;
+                    } else if (wentDown || Date.now() - started > MIN_WAIT_MS) {
+                        window.location.replace('/');
+                        return;
+                    }
+                    setTimeout(poll, POLL_INTERVAL_MS);
+                });
+            }
+            setTimeout(poll, POLL_INTERVAL_MS);
+        })();
+    </script>
+</body>
+</html>

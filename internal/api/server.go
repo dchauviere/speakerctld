@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/url"
@@ -18,6 +19,7 @@ import (
 	"github.com/dchauviere/speakerctld/internal/storage"
 	"github.com/dchauviere/speakerctld/internal/swupdate"
 	"github.com/dchauviere/speakerctld/internal/systemd"
+	"github.com/dchauviere/speakerctld/internal/ui"
 )
 
 // Server manages the web server for both captive portal and settings interfaces
@@ -244,6 +246,14 @@ func (s *Server) createHandler() http.Handler {
 
 	mux.HandleFunc("/api/system/factory-reset", s.handleFactoryReset)
 
+	// Reboot landing page and liveness probe, available in every state
+	mux.HandleFunc("/rebooting", s.handleRebootingPage)
+	mux.HandleFunc("/api/system/ping", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Write([]byte(`{"status":"ok"}`))
+	})
+
 	mux.HandleFunc("/api/system/info", func(w http.ResponseWriter, r *http.Request) {
 		currentState := s.stateMachine.CurrentState()
 		if currentState == state.Online || (currentState == state.FirstBootAP && s.stateMachine.IsProvisioned()) {
@@ -452,6 +462,7 @@ func (s *Server) forwardSWUpdateEvents() {
 				Type: "firmware_update",
 				Payload: websocket.CompletedEvent{
 					Success: true,
+					Reboot:  true,
 					Message: "Update completed successfully",
 				},
 			}
@@ -487,4 +498,16 @@ func (s *Server) forwardSWUpdateEvents() {
 // GetWebSocketHub returns the WebSocket hub for external use
 func (s *Server) GetWebSocketHub() *websocket.Hub {
 	return s.wsHub
+}
+
+// handleRebootingPage serves the self-contained page shown while the speaker reboots
+func (s *Server) handleRebootingPage(w http.ResponseWriter, r *http.Request) {
+	page, err := fs.ReadFile(ui.SettingsAssets(), "settings/rebooting.html")
+	if err != nil {
+		http.Error(w, "Failed to load page", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Write(page)
 }
