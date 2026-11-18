@@ -133,6 +133,7 @@ func (h *Handler) serveStaticFile(w http.ResponseWriter, r *http.Request, path s
 	// Set appropriate content type based on file extension
 	switch filepath.Ext(path) {
 	case ".css":
+		data = ui.ApplyTheme(data)
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
 	case ".js":
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")

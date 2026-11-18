@@ -446,9 +446,13 @@ func main() {
 	dataDir := flag.String("data-dir", DefaultDataDir, "Data directory")
 	name := flag.String("name", ui.DefaultName, "Speaker name displayed in the web interface")
 	description := flag.String("description", ui.DefaultDescription, "Description displayed in the web interface")
+	color := flag.String("color", ui.DefaultColor, "Dominant color of the web interface (name or hex, e.g. green or #2a9d62)")
 	resetButton := flag.String("factory-reset-input", "/dev/input/event0", "Linux input device for factory reset (empty to disable)")
 	resetHold := flag.Duration("factory-reset-hold", 10*time.Second, "Duration to hold KEY_POWER for factory reset")
 	flag.Parse()
+	if err := ui.SetThemeColor(*color); err != nil {
+		log.Fatal(err)
+	}
 	if *resetButton != "" && *resetHold <= 0 {
 		log.Fatal("factory-reset-hold must be positive")
 	}
