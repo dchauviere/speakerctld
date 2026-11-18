@@ -57,3 +57,17 @@ Les modifications de la configuration réseau doivent être validées avant d'ê
 Les dépendances entre les services doivent être correctement gérées pour garantir un ordre d'exécution cohérent.
 Les mécanismes de surveillance et de récupération doivent être en place pour détecter et corriger les défaillances du réseau ou des services.
 Les mises à jour de la configuration ou du logiciel doivent être appliquées de manière sécurisée et contrôlée pour éviter toute interruption non planifiée du service.
+
+# Format
+
+les commits doivent utiliser les gitmoji pour indiquer le type de changement effectué.
+Par exemple :
+- ✨ ajout de nouvelles fonctionnalités
+- 🐛 correction de bugs
+- 📝 mise à jour de la documentation
+- 🔧 modifications de la configuration ou des outils
+- ♻️ refactorisation du code
+- 🔥 suppression de code ou de fichiers
+- ✅ ajout ou modification de tests
+- 🚀 amélioration des performances
+- 🧹 nettoyage du code ou des fichiers temporaires
