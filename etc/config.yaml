@@ -1,0 +1,5 @@
+interface: wlan0
+port: "80"
+data-dir: /data
+factory-reset-input: /dev/input/event0
+factory-reset-hold: 10s

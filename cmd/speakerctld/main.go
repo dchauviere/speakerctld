@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -440,34 +442,28 @@ func (s *SpeakerCtld) Start() {
 }
 
 func main() {
-	// Parse command line flags
-	wifiInterface := flag.String("interface", DefaultWifiInterface, "WiFi interface to monitor")
-	port := flag.String("port", DefaultPort, "HTTP port for web server")
-	dataDir := flag.String("data-dir", DefaultDataDir, "Data directory")
-	name := flag.String("name", ui.DefaultName, "Speaker name displayed in the web interface")
-	description := flag.String("description", ui.DefaultDescription, "Description displayed in the web interface")
-	color := flag.String("color", ui.DefaultColor, "Dominant color of the web interface (name or hex, e.g. green or #2a9d62)")
-	resetButton := flag.String("factory-reset-input", "/dev/input/event0", "Linux input device for factory reset (empty to disable)")
-	resetHold := flag.Duration("factory-reset-hold", 10*time.Second, "Duration to hold KEY_POWER for factory reset")
-	flag.Parse()
-	if err := ui.SetThemeColor(*color); err != nil {
+	cfg, err := loadConfig(os.Args[1:], os.Stderr)
+	if errors.Is(err, flag.ErrHelp) {
+		return
+	}
+	if err != nil {
 		log.Fatal(err)
 	}
-	if *resetButton != "" && *resetHold <= 0 {
-		log.Fatal("factory-reset-hold must be positive")
+	if err := ui.SetThemeColor(cfg.color); err != nil {
+		log.Fatal(err)
 	}
 
-	log.Printf("Starting Speakerctld Speaker Controller with WiFi interface: %s", *wifiInterface)
-	log.Printf("Web server will be available on port: %s", *port)
-	log.Printf("Data directory: %s", *dataDir)
+	log.Printf("Starting Speakerctld Speaker Controller with WiFi interface: %s", cfg.wifiInterface)
+	log.Printf("Web server will be available on port: %s", cfg.port)
+	log.Printf("Data directory: %s", cfg.dataDir)
 
 	// Initialize the application
-	app, err := NewSpeakerCtld(*wifiInterface, *port, *dataDir, *name, *description)
+	app, err := NewSpeakerCtld(cfg.wifiInterface, cfg.port, cfg.dataDir, cfg.name, cfg.description)
 	if err != nil {
 		log.Fatalf("Failed to initialize application: %v", err)
 	}
-	app.resetButton = *resetButton
-	app.resetHold = *resetHold
+	app.resetButton = cfg.resetButton
+	app.resetHold = cfg.resetHold
 
 	// Start the application
 	app.Start()

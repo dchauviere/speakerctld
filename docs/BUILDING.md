@@ -307,6 +307,8 @@ sudo install -m 644 systemd/speakerctld.service systemd/speakerctld-ap.target \
     systemd/speakerctld-dnsmasq.service systemd/wifi-client.target /etc/systemd/system/
 sudo install -d /etc/speakerctld
 sudo install -m 644 etc/dnsmasq.conf.gotmpl /etc/speakerctld/
+# Preserve an existing configuration when installing or upgrading.
+sudo cp -n etc/config.yaml /etc/speakerctld/config.yaml
 sudo systemctl daemon-reload
 
 # Enable service
@@ -318,13 +320,56 @@ sudo systemctl start speakerctld
 
 ## Configuration
 
+### YAML configuration file
+
+The daemon reads `/etc/speakerctld/config.yaml` at startup if it exists. Use
+`-config /path/to/config.yaml` to select another file. An explicitly selected
+file must exist, even if it is the default path. An unreadable or invalid file,
+unknown or duplicate keys, null values, and multiple YAML documents cause startup
+to fail with an error.
+
+The file is a mapping with the same keys as the command-line options. Omitted
+keys retain their defaults. Values are strings; `port` also accepts an unquoted
+integer. Quote values such as hex colors, which otherwise begin a YAML comment.
+
+```yaml
+interface: wlan0
+port: "8080"
+data-dir: /data
+name: Speakerctld
+description: "Gérez votre enceinte et consultez son état."
+color: blue
+factory-reset-input: /dev/input/event0
+factory-reset-hold: 10s
+```
+
+These are the application defaults. The hold duration uses Go duration syntax,
+such as `10s` or `1m30s`. Set `factory-reset-input: ""` to disable the button.
+Command-line options explicitly supplied override the file, including empty
+strings and values equal to the defaults. For example:
+
+```bash
+speakerctld -config /path/to/config.yaml -port 8080
+```
+
+The supplied [systemd configuration](../etc/config.yaml) sets port 80, matching
+the previous service. Install it before restarting an upgraded service, without
+overwriting an existing configuration, as shown above. If no file is installed,
+the service uses the application default port 8080. Remove conflicting options
+from any local systemd overrides: explicit command-line options take precedence
+over the file.
+
 ### Command Line Options
 
 ```bash
 speakerctld \
+    -config /etc/speakerctld/config.yaml \
     -interface wlan0 \
     -port 8080 \
     -data-dir /data \
+    -name Speakerctld \
+    -description "Gérez votre enceinte et consultez son état." \
+    -color blue \
     -factory-reset-input /dev/input/event0 \
     -factory-reset-hold 10s
 ```
