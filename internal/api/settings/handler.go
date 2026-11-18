@@ -1,7 +1,9 @@
 package settings
 
 import (
+	"bytes"
 	"encoding/json"
+	"html/template"
 	"io"
 	"io/fs"
 	"log"
@@ -20,6 +22,8 @@ type Handler struct {
 	storage      storage.Storage
 	dataDir      string
 	assets       fs.FS
+	name         string
+	description  string
 }
 
 // NewHandler creates a new settings API handler
@@ -29,7 +33,15 @@ func NewHandler(stateMachine state.StateMachine, storage storage.Storage) *Handl
 		storage:      storage,
 		dataDir:      "/data",
 		assets:       ui.SettingsAssets(),
+		name:         ui.DefaultName,
+		description:  ui.DefaultDescription,
 	}
+}
+
+// SetBranding configures the name and description displayed on the settings page.
+func (h *Handler) SetBranding(name, description string) {
+	h.name = name
+	h.description = description
 }
 
 // SetDataDir selects the directory used for device and firmware information.
@@ -68,10 +80,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // serveSettingsPage serves the settings HTML page
 func (h *Handler) serveSettingsPage(w http.ResponseWriter, r *http.Request) {
-	// Set content type
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-
-	// Read and serve the embedded HTML file
+	// Read and render the embedded HTML template.
 	file, err := h.assets.Open("settings/index.html")
 	if err != nil {
 		http.Error(w, "Failed to load settings page", http.StatusInternalServerError)
@@ -85,7 +94,22 @@ func (h *Handler) serveSettingsPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = w.Write(data)
+	page, err := template.New("settings").Parse(string(data))
+	if err != nil {
+		http.Error(w, "Failed to parse settings page", http.StatusInternalServerError)
+		return
+	}
+	var buffer bytes.Buffer
+	if err := page.Execute(&buffer, struct {
+		Name        string
+		Description string
+	}{Name: h.name, Description: h.description}); err != nil {
+		http.Error(w, "Failed to render settings page", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, err = w.Write(buffer.Bytes())
 	if err != nil {
 		log.Printf("Error writing settings page: %v", err)
 	}

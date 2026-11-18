@@ -5,6 +5,11 @@ import (
 	"io/fs"
 )
 
+const (
+	DefaultName        = "Speakerctld"
+	DefaultDescription = "Gérez votre enceinte et consultez son état."
+)
+
 //go:embed captive/index.html captive/captive.css captive/captive.js
 var captiveAssets embed.FS
 

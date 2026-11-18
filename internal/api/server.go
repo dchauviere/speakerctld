@@ -52,6 +52,8 @@ func NewServer(
 	wifiInterface string,
 	port string,
 	dataDir string,
+	name string,
+	description string,
 ) (*Server, error) {
 
 	s := &Server{
@@ -86,6 +88,7 @@ func NewServer(
 
 	// Create settings handler
 	s.settingsHandler = settings.NewHandler(stateMachine, storage)
+	s.settingsHandler.SetBranding(name, description)
 	if dataDir != "" {
 		s.settingsHandler.SetDataDir(dataDir)
 	}

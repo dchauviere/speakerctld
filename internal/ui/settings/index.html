@@ -3,15 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Speakerctld - Paramètres</title>
+    <title>{{.Name}} - Paramètres</title>
     <link rel="stylesheet" href="/static/settings.css">
 </head>
 <body>
     <div class="container">
         <div class="header">
             <p class="eyebrow">ESPACE D’ADMINISTRATION</p>
-            <h1>Speakerctld</h1>
-            <p>Gérez votre enceinte et consultez son état.</p>
+            <h1>{{.Name}}</h1>
+            <p>{{.Description}}</p>
         </div>
         <div class="content">
             <div class="nav-tabs" role="tablist" aria-label="Sections des paramètres" onkeydown="navigateTabs(event)">

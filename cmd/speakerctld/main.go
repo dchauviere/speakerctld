@@ -15,6 +15,7 @@ import (
 	"github.com/dchauviere/speakerctld/internal/factoryreset"
 	"github.com/dchauviere/speakerctld/internal/state"
 	"github.com/dchauviere/speakerctld/internal/storage"
+	"github.com/dchauviere/speakerctld/internal/ui"
 )
 
 // StateCheckInterval is how often we check and potentially transition state.
@@ -49,7 +50,7 @@ type orchestrator interface {
 }
 
 // NewSpeakerCtld creates a new instance of the speaker controller.
-func NewSpeakerCtld(wifiInterface, port, dataDir string) (*SpeakerCtld, error) {
+func NewSpeakerCtld(wifiInterface, port, dataDir, name, description string) (*SpeakerCtld, error) {
 	// Use provided data directory or default
 	if dataDir == "" {
 		dataDir = DefaultDataDir
@@ -81,6 +82,8 @@ func NewSpeakerCtld(wifiInterface, port, dataDir string) (*SpeakerCtld, error) {
 		wifiInterface,
 		port,
 		dataDir,
+		name,
+		description,
 	)
 	if err != nil {
 		log.Printf("Warning: failed to initialize API server: %v", err)
@@ -441,6 +444,8 @@ func main() {
 	wifiInterface := flag.String("interface", DefaultWifiInterface, "WiFi interface to monitor")
 	port := flag.String("port", DefaultPort, "HTTP port for web server")
 	dataDir := flag.String("data-dir", DefaultDataDir, "Data directory")
+	name := flag.String("name", ui.DefaultName, "Speaker name displayed in the web interface")
+	description := flag.String("description", ui.DefaultDescription, "Description displayed in the web interface")
 	resetButton := flag.String("factory-reset-input", "/dev/input/event0", "Linux input device for factory reset (empty to disable)")
 	resetHold := flag.Duration("factory-reset-hold", 10*time.Second, "Duration to hold KEY_POWER for factory reset")
 	flag.Parse()
@@ -453,7 +458,7 @@ func main() {
 	log.Printf("Data directory: %s", *dataDir)
 
 	// Initialize the application
-	app, err := NewSpeakerCtld(*wifiInterface, *port, *dataDir)
+	app, err := NewSpeakerCtld(*wifiInterface, *port, *dataDir, *name, *description)
 	if err != nil {
 		log.Fatalf("Failed to initialize application: %v", err)
 	}
