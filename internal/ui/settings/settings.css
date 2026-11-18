@@ -395,11 +395,6 @@ progress::-moz-progress-bar {
     font-weight: 600;
 }
 
-#firmware-progress-text {
-    color: var(--muted);
-    font-size: 13px;
-}
-
 /* Info list styles */
 .info-list {
     list-style: none;

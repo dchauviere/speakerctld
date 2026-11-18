@@ -2,6 +2,7 @@
 let firmwareUpdateState = {
     ws: null,
     uploadInProgress: false,
+    uploading: false,
     currentProgress: 0,
     currentStatus: 'idle',
     error: null
@@ -216,35 +217,45 @@ function handleFirmwareProgress(progress) {
     firmwareUpdateState.currentProgress = progress;
     firmwareUpdateState.currentStatus = progress.status;
     
-    // Update progress bar
-    const progressContainer = document.getElementById('firmware-progress-container');
-    if (progressContainer) {
-        progressContainer.classList.remove('hidden');
-    }
-    const progressBar = document.getElementById('firmware-progress-bar');
-    const progressText = document.getElementById('firmware-progress-text');
-    const progressPercent = document.getElementById('firmware-progress-percent');
-    
-    if (progressBar) {
-        progressBar.value = progress.step_percent || progress.download_percent || 0;
-    }
-    
-    if (progressText) {
-        let text = progress.message || 'Mise à jour en cours...';
-        if (progress.total_steps > 0) {
-            text = 'Étape ' + progress.current_step + '/' + progress.total_steps + ' - ' + text;
-        }
-        progressText.textContent = text;
-    }
-    
-    if (progressPercent) {
-        const percent = progress.step_percent || progress.download_percent || 0;
-        progressPercent.textContent = percent + '%';
-    }
-    
-    // Update status
-    showStatus('Mise à jour en cours: ' + (progress.message || progress.status) + ' (' + 
-        (progress.step_percent || progress.download_percent || 0) + '%)', 'info');
+    firmwareUpdateState.uploading = false;
+    setProgress('Mise à jour en cours', progress.step_percent || progress.download_percent || 0);
+    hideStatus();
+}
+
+// Show the progress bar with a phase label and a percentage
+function setProgress(label, percent) {
+    const container = document.getElementById('firmware-progress-container');
+    const labelEl = document.getElementById('firmware-progress-label');
+    const bar = document.getElementById('firmware-progress-bar');
+    const percentEl = document.getElementById('firmware-progress-percent');
+    if (container) container.classList.remove('hidden');
+    if (labelEl) labelEl.textContent = label;
+    if (bar) bar.value = percent;
+    if (percentEl) percentEl.textContent = percent + '%';
+}
+
+// Upload the firmware with XHR, which (unlike fetch) reports upload progress
+function uploadFirmware(formData) {
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/firmware/upload');
+        xhr.upload.onprogress = function(e) {
+            if (e.lengthComputable && firmwareUpdateState.uploading) {
+                setProgress('Téléchargement du firmware', Math.round(e.loaded * 100 / e.total));
+            }
+        };
+        xhr.onload = function() {
+            let data = {};
+            try { data = JSON.parse(xhr.responseText); } catch (e) { /* not JSON */ }
+            if (xhr.status < 200 || xhr.status >= 300) {
+                reject(new Error(data.message || data.error || 'Échec du téléchargement: ' + xhr.statusText));
+            } else {
+                resolve(data);
+            }
+        };
+        xhr.onerror = function() { reject(new Error('Erreur réseau pendant le téléchargement')); };
+        xhr.send(formData);
+    });
 }
 
 // Handle firmware update status
@@ -305,6 +316,11 @@ function handleFirmwareFailed(payload) {
     firmwareUpdateState.currentStatus = 'failed';
     firmwareUpdateState.error = payload.message || payload.error || 'Erreur inconnue';
     
+    // Replace the progress bar with the error message
+    const failedContainer = document.getElementById('firmware-progress-container');
+    if (failedContainer) {
+        failedContainer.classList.add('hidden');
+    }
     showStatus('Échec de la mise à jour: ' + firmwareUpdateState.error, 'error');
     
     // Re-enable buttons
@@ -323,7 +339,15 @@ function handleFirmwareUpdate(payload) {
     if (payload.status === 'started') {
         firmwareUpdateState.uploadInProgress = true;
         firmwareUpdateState.currentStatus = 'started';
-        showStatus('Début de la mise à jour: ' + payload.message, 'info');
+        hideStatus();
+    }
+}
+
+// Hide status message
+function hideStatus() {
+    const statusDiv = document.getElementById('upload-status');
+    if (statusDiv) {
+        statusDiv.classList.add('hidden');
     }
 }
 
@@ -394,8 +418,9 @@ async function updateFirmware() {
     if (updateBtn) updateBtn.disabled = true;
     if (checkBtn) checkBtn.disabled = true;
     
-    // Show uploading status
-    showStatus('Téléchargement du firmware: ' + file.name + ' (' + formatFileSize(file.size) + ')...', 'info');
+    firmwareUpdateState.uploading = true;
+    hideStatus();
+    setProgress('Téléchargement du firmware', 0);
     
     // Create FormData for file upload
     const formData = new FormData();
@@ -403,20 +428,12 @@ async function updateFirmware() {
     
     try {
         // Upload firmware file
-        const response = await fetch('/api/firmware/upload', {
-            method: 'POST',
-            body: formData
-        });
-        
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.message || errorData.error || 'Échec du téléchargement: ' + response.statusText);
-        }
-        
-        const data = await response.json();
+        const data = await uploadFirmware(formData);
+        firmwareUpdateState.uploading = false;
         
         if (data.status === 'started') {
-            showStatus('Installation du firmware en cours...', 'info');
+            setProgress('Mise à jour en cours', 0);
+            hideStatus();
             // The update is now running in the background
             // Progress will be reported via WebSocket
         } else {
@@ -424,8 +441,11 @@ async function updateFirmware() {
         }
         
     } catch (error) {
+        firmwareUpdateState.uploading = false;
         firmwareUpdateState.uploadInProgress = false;
         firmwareUpdateState.error = error.message;
+        const progressBox = document.getElementById('firmware-progress-container');
+        if (progressBox) progressBox.classList.add('hidden');
         
         // Re-enable buttons
         if (updateBtn) updateBtn.disabled = false;
@@ -484,9 +504,7 @@ function getFirmwareStatus() {
         if (data.is_running || data.in_progress) {
             // Update is in progress, show status
             const progress = data.progress || {};
-            const message = progress.message || 'Mise à jour en cours...';
-            const percent = progress.step_percent || progress.download_percent || 0;
-            showStatus(message + ' (' + percent + '%)', 'info');
+            handleFirmwareProgress(progress);
         }
     })
     .catch(error => {
